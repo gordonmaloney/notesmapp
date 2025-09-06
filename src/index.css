@@ -12,3 +12,18 @@ body {
   background: #fff;
   overscroll-behavior: none;  /* no scroll chaining/bounce */
 }
+
+
+.node-text-unconstrained {
+  display: inline !important;
+  white-space: pre !important;
+  word-break: keep-all !important;
+  width: max-content !important;
+  max-width: none !important;
+  overflow: visible !important;
+  
+  /* Chrome-specific optimizations */
+  will-change: transform;
+  contain: layout;
+  backface-visibility: hidden;
+}

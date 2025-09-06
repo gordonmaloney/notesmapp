@@ -38,10 +38,7 @@ export default function Grid({ camera }) {
       ctx.moveTo(sx, 0);
       ctx.lineTo(sx, canvas.height / dpr);
 
-      if (!logged) {
-        console.log("Grid X world", x, "→ screen", sx);
-        logged = true;
-      }
+
     }
 
     for (
@@ -53,10 +50,7 @@ export default function Grid({ camera }) {
       ctx.moveTo(0, sy);
       ctx.lineTo(canvas.width / dpr, sy);
 
-      if (logged === true) {
-        console.log("Grid Y world", y, "→ screen", sy);
-        logged = "done";
-      }
+  
     }
 
     ctx.stroke();

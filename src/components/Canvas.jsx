@@ -2,147 +2,38 @@
 import { useState, useRef, useEffect } from "react";
 import { flushSync } from "react-dom";
 import { useCamera, scale, normalizeZoomPure } from "../hooks/useCamera";
+import { loadPersisted, savePersisted } from "../utils/persistence";
+import { textToHtml } from "../utils/html";
 import { screenToWorld } from "../utils/math";
+
 import Grid from "./Grid";
 import NodesLayer from "./NodesLayer";
 import ShapesLayer from "./ShapesLayer";
 import DrawOverlay from "./DrawOverlay";
+import ViewsBar from "./ViewsBar";
+import TasksPanel from "./TasksPanel";
+import DrawToolbar from "./DrawToolbar";
 
-const BASE_SPEED = 0.01;
-const KEY_FACTOR = 1.1;
-const SNAP_AT_NORMALIZE = true;
-const SNAP_PX = 0.5;
+import { useCameraTween } from "../hooks/useCameraTween";
+import { usePanZoom } from "../hooks/usePanZoom";
 
+/** ────────────────────────── Config ────────────────────────── **/
 const BASE_FONT_PX = 14;
 const NEW_NODE_FONT_PX = 18;
-
-const TASKS_W = 220;
-const STORAGE_KEY = "infcanvas.v1";
-
-// ─── Persistence helpers ────────────────────────────────────────────────────
-function loadPersisted() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return null;
-    const data = JSON.parse(raw);
-    const coerceNum = (n, d = 0) =>
-      typeof n === "number" && isFinite(n) ? n : d;
-
-    // camera
-    let cam =
-      data.camera && typeof data.camera === "object" ? data.camera : null;
-    if (cam) {
-      cam = {
-        x: coerceNum(cam.x, 0),
-        y: coerceNum(cam.y, 0),
-        zoomBase: coerceNum(cam.zoomBase, 1),
-        zoomExp: Math.trunc(coerceNum(cam.zoomExp, 0)),
-      };
-      const { camera: norm } = normalizeZoomPure(cam);
-      cam = norm;
-    }
-
-    // nodes
-    const nodes = Array.isArray(data.nodes)
-      ? data.nodes.map((n) => ({
-          id: n.id ?? Date.now() + Math.random(),
-          x: coerceNum(n.x, 0),
-          y: coerceNum(n.y, 0),
-          text: typeof n.text === "string" ? n.text : "",
-          scale: (() => {
-            const s = coerceNum(n.scale, 1);
-            return Math.min(20, Math.max(0.05, s));
-          })(),
-        }))
-      : [];
-
-    // shapes
-    const shapes = Array.isArray(data.shapes)
-      ? data.shapes.filter(
-          (s) =>
-            s &&
-            typeof s === "object" &&
-            (s.type === "line" || s.type === "rect" || s.type === "circle")
-        )
-      : [];
-
-    // views
-    const views = Array.isArray(data.views)
-      ? data.views.map((v) => ({
-          id: v.id ?? Date.now() + Math.random(),
-          name: typeof v.name === "string" ? v.name : "View",
-          camera: v.camera
-            ? normalizeZoomPure({
-                x: coerceNum(v.camera.x, 0),
-                y: coerceNum(v.camera.y, 0),
-                zoomBase: coerceNum(v.camera.zoomBase, 1),
-                zoomExp: Math.trunc(coerceNum(v.camera.zoomExp, 0)),
-              }).camera
-            : { x: 0, y: 0, zoomBase: 1, zoomExp: 0 },
-        }))
-      : null;
-
-    // tasks (with done flag)
-    const tasks = Array.isArray(data.tasks)
-      ? data.tasks
-          .map((t) => {
-            if (!t || typeof t !== "object") return null;
-            const cam = t.camera
-              ? normalizeZoomPure({
-                  x: coerceNum(t.camera.x, 0),
-                  y: coerceNum(t.camera.y, 0),
-                  zoomBase: coerceNum(t.camera.zoomBase, 1),
-                  zoomExp: Math.trunc(coerceNum(t.camera.zoomExp, 0)),
-                }).camera
-              : null;
-            if (!cam || !t.nodeId) return null;
-            return {
-              id: t.id ?? `task_${Date.now()}_${Math.random()}`,
-              nodeId: t.nodeId,
-              camera: cam,
-              done: !!t.done,
-            };
-          })
-          .filter(Boolean)
-      : [];
-
-    // UI flags
-    const tasksOpen =
-      typeof data?.ui?.tasksOpen === "boolean"
-        ? data.ui.tasksOpen
-        : typeof data?.tasksOpen === "boolean"
-        ? data.tasksOpen
-        : false; // default collapsed
-
-    const taskSplit =
-      typeof data?.ui?.taskSplit === "number" &&
-      data.ui.taskSplit > 0 &&
-      data.ui.taskSplit < 1
-        ? data.ui.taskSplit
-        : 0.55;
-
-    return {
-      camera: cam,
-      nodes,
-      shapes,
-      views,
-      tasks,
-      ui: { tasksOpen, taskSplit },
-    };
-  } catch {
-    return null;
-  }
-}
-function savePersisted(payload) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-  } catch {}
-}
-// ───────────────────────────────────────────────────────────────────────────
 
 export default function Canvas() {
   const { camera, setCamera } = useCamera();
 
+  // live camera ref
+  const cameraRef = useRef(camera);
+  useEffect(() => {
+    cameraRef.current = camera;
+  }, [camera]);
+
+  const { cancelCameraTween, jumpToView, resetView } =
+    useCameraTween(setCamera);
+
+  /** ─────────────── State ─────────────── **/
   // nodes / selection
   const [nodes, setNodes] = useState([]);
   const [focusId, setFocusId] = useState(null);
@@ -153,7 +44,7 @@ export default function Canvas() {
   const [selectedShapeId, setSelectedShapeId] = useState(null);
   const [activeTool, setActiveTool] = useState(null); // 'line'|'rect'|'circle'|null
 
-  // frames (views)
+  // views
   const [views, setViews] = useState([
     {
       id: "home",
@@ -169,7 +60,7 @@ export default function Canvas() {
   const [tasksOpen, setTasksOpen] = useState(false);
   const [taskSplit, setTaskSplit] = useState(0.55);
 
-  // load persisted
+  /** ─────────────── Load persisted on mount ─────────────── **/
   useEffect(() => {
     const data = loadPersisted();
     if (!data) return;
@@ -184,10 +75,9 @@ export default function Canvas() {
     if (data.camera) flushSync(() => setCamera(data.camera));
   }, [setCamera]);
 
-  // persist on change (debounced)
+  /** ─────────────── Persist on change (debounced) ─────────────── **/
   const saveTimer = useRef(null);
-  const scheduleSave = () => {
-    if (saveTimer.current) clearTimeout(saveTimer.current);
+  useEffect(() => {
     const snapshot = {
       v: 1,
       nodes,
@@ -197,207 +87,73 @@ export default function Canvas() {
       camera,
       ui: { tasksOpen, taskSplit },
     };
+    if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
       savePersisted(snapshot);
       saveTimer.current = null;
     }, 250);
-  };
-  useEffect(() => {
-    scheduleSave();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nodes, shapes, views, tasks, camera, tasksOpen, taskSplit]);
 
+  /** ─────────────── Container + pan/zoom ─────────────── **/
   const containerRef = useRef(null);
+  const {
+    onPointerDown,
+    onPointerMove,
+    endPan,
+    onPointerLeave,
+    onKeyZoom, // optional key zoom handler from usePanZoom
+  } = usePanZoom(containerRef, cameraRef, setCamera, cancelCameraTween);
 
-  // panning
-  const isPanning = useRef(false);
-  const lastPos = useRef({ x: 0, y: 0 });
-  const spaceDown = useRef(false);
-
-  // hover (for key zoom anchor)
-  const hoverRef = useRef({ inside: false, ax: 0, ay: 0 });
-
-  // live camera ref
-  const cameraRef = useRef(camera);
-  useEffect(() => {
-    cameraRef.current = camera;
-  }, [camera]);
-
-  // Space toggles panning
-  useEffect(() => {
-    const onKeyDown = (e) => {
-      if (e.code === "Space") spaceDown.current = true;
-    };
-    const onKeyUp = (e) => {
-      if (e.code === "Space") spaceDown.current = false;
-    };
-    window.addEventListener("keydown", onKeyDown, { passive: true });
-    window.addEventListener("keyup", onKeyUp, { passive: true });
-    return () => {
-      window.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("keyup", onKeyUp);
-    };
-  }, []);
-
-  // blur helper
+  /** ─────────────── Keyboard: Escape / 0 / +/- ─────────────── **/
   const blurActiveEditable = () => {
     const ae = document.activeElement;
     if (
       ae &&
       (ae.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName))
-    )
+    ) {
       ae.blur();
+    }
   };
-
-  // ESC clears selections and blurs
+  const clearSelectionsAndBlur = () => {
+    setSelectedIds([]);
+    setSelectedShapeId(null);
+    blurActiveEditable();
+  };
   useEffect(() => {
     const onKey = (e) => {
-      if (
-        e.key === "Escape" &&
-        !(
-          e.target?.isContentEditable ||
-          /^(INPUT|TEXTAREA|SELECT)$/.test(e.target?.tagName)
-        )
-      ) {
+      if (e.key === "Escape") {
+        setActiveTool(null);
         clearSelectionsAndBlur();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
-
-  // ---------- Zoom helpers ----------
-  const zoomAt = (ax, ay, factor) => {
-    cancelCameraTween();
-    const pre = cameraRef.current;
-    const W = screenToWorld({ x: ax, y: ay }, pre);
-    const proposed = { ...pre, zoomBase: pre.zoomBase * factor };
-    const { camera: post } = normalizeZoomPure(proposed);
-    const Zpost = scale(post);
-    let newX = ax - W.x * Zpost;
-    let newY = ay - W.y * Zpost;
-    const didNormalize = post.zoomExp !== pre.zoomExp;
-    if (SNAP_AT_NORMALIZE && didNormalize) {
-      const snap = (v) => Math.round(v / SNAP_PX) * SNAP_PX;
-      newX = snap(newX);
-      newY = snap(newY);
-    }
-    flushSync(() => setCamera({ ...post, x: newX, y: newY }));
-  };
-
-  const handleWheelZoom = (e) => {
-    const deltaPx =
-      e.deltaMode === 1
-        ? e.deltaY * 16
-        : e.deltaMode === 2
-        ? e.deltaY * 800
-        : e.deltaY;
-    const factor = Math.exp(-deltaPx * BASE_SPEED);
-    const rect = containerRef.current.getBoundingClientRect();
-    const ax = e.clientX - rect.left;
-    const ay = e.clientY - rect.top;
-    zoomAt(ax, ay, factor);
-  };
-
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    const onWheel = (ev) => {
-      if (ev.ctrlKey || ev.metaKey) {
-        ev.preventDefault();
-        handleWheelZoom(ev);
-        cancelCameraTween();
         return;
       }
-      setCamera((c) => ({ ...c, x: c.x - ev.deltaX, y: c.y - ev.deltaY }));
-      cancelCameraTween();
-      ev.preventDefault();
-    };
-    el.addEventListener("wheel", onWheel, { passive: false });
-    return () => el.removeEventListener("wheel", onWheel);
-  }, [setCamera]);
 
-  // Background pointer (panning + hover)
-  const onPointerDown = (e) => {
-    const left = e.button === 0,
-      mid = e.button === 1;
-    if (mid || (left && (e.shiftKey || spaceDown.current))) {
-      cancelCameraTween();
-      isPanning.current = true;
-      lastPos.current = { x: e.clientX, y: e.clientY };
-      e.currentTarget.setPointerCapture?.(e.pointerId);
-      e.preventDefault();
-    }
-  };
-  const onPointerMove = (e) => {
-    const rect = containerRef.current.getBoundingClientRect();
-    hoverRef.current = {
-      inside: true,
-      ax: e.clientX - rect.left,
-      ay: e.clientY - rect.top,
-    };
-    if (!isPanning.current) return;
-    const dx = e.clientX - lastPos.current.x;
-    const dy = e.clientY - lastPos.current.y;
-    setCamera((c) => ({ ...c, x: c.x + dx, y: c.y + dy }));
-    lastPos.current = { x: e.clientX, y: e.clientY };
-    e.preventDefault();
-  };
-  const endPan = (e) => {
-    if (!isPanning.current) return;
-    isPanning.current = false;
-    e.currentTarget.releasePointerCapture?.(e.pointerId);
-    e.preventDefault();
-  };
-  const onPointerLeave = () => {
-    hoverRef.current.inside = false;
-  };
-
-  // Reset & key zoom (= / -)
-  const resetView = () =>
-    jumpToView({ x: 0, y: 0, zoomBase: 1, zoomExp: 0 }, true);
-  useEffect(() => {
-    const onKey = (e) => {
+      // otherwise ignore when typing
       if (
-        e.target &&
-        (e.target.isContentEditable ||
-          /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName))
-      )
+        e.target?.isContentEditable ||
+        /^(INPUT|TEXTAREA|SELECT)$/.test(e.target?.tagName)
+      ) {
         return;
+      }
 
       if (e.key === "0") {
         e.preventDefault();
         resetView();
         return;
       }
-      const rect = containerRef.current?.getBoundingClientRect();
-      if (!rect) return;
-      const { inside, ax: hx, ay: hy } = hoverRef.current;
-      const ax = inside ? hx : rect.width / 2;
-      const ay = inside ? hy : rect.height / 2;
-
-      if (
-        e.key === "=" ||
-        e.key === "+" ||
-        e.code === "Equal" ||
-        e.code === "NumpadAdd"
-      ) {
-        e.preventDefault();
-        zoomAt(ax, ay, KEY_FACTOR);
-        return;
-      }
-      if (e.key === "-" || e.code === "Minus" || e.code === "NumpadSubtract") {
-        e.preventDefault();
-        zoomAt(ax, ay, 1 / KEY_FACTOR);
-        return;
-      }
+      // delegate +/- to pan-zoom hook if provided
+      onKeyZoom?.(e);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [onKeyZoom]);
 
-  // Double-click to add node (ignore UI + Shapes layer)
+  /** ─────────────── Derived ─────────────── **/
+  const Z = scale(camera);
+  const doneNodeIds = new Set(tasks.filter((t) => t.done).map((t) => t.nodeId));
+
+  /** ─────────────── Double-click to add node ─────────────── **/
   const handleDoubleClick = (e) => {
+    // ignore UI or shapes overlay clicks (ViewsBar/TasksPanel/DrawToolbar/ShapesLayer can mark with data-ui or data-shapes-layer)
     if (
       e.target?.isContentEditable ||
       e.target?.closest?.("[data-ui]") ||
@@ -410,7 +166,7 @@ export default function Canvas() {
     const world = screenToWorld(screen, cameraRef.current);
     const id = Date.now();
     const Zc = scale(cameraRef.current);
-    const nodeScale = NEW_NODE_FONT_PX / BASE_FONT_PX / Zc;
+    const nodeScale = NEW_NODE_FONT_PX / ((BASE_FONT_PX * Zc)/4);
     setNodes((ns) => [
       ...ns,
       { id, x: world.x, y: world.y, text: "", scale: nodeScale },
@@ -420,7 +176,37 @@ export default function Canvas() {
     setSelectedShapeId(null);
   };
 
-  // Node ops
+  const handleSingleClick = (e) => {
+    if (activeTool !== "text") {
+      return;
+    }
+
+    // Only exclude contentEditable and shapes layer, not all data-ui
+    if (
+      e.target?.isContentEditable ||
+      e.target?.closest?.("[data-shapes-layer]")
+    ) {
+      return;
+    }
+
+    const rect = containerRef.current.getBoundingClientRect();
+    const screen = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    const world = screenToWorld(screen, cameraRef.current);
+    const id = Date.now();
+    const Zc = scale(cameraRef.current);
+
+    const nodeScale = NEW_NODE_FONT_PX / ((BASE_FONT_PX * Zc) / 4);
+
+    setNodes((ns) => [
+      ...ns,
+      { id, x: world.x, y: world.y, text: "", scale: nodeScale },
+    ]);
+    setFocusId(id);
+    setSelectedIds([id]);
+    setSelectedShapeId(null);
+  };
+
+  /** ─────────────── Node ops ─────────────── **/
   const moveSelectedByScreen = (dx, dy) => {
     if (!selectedIds.length) return;
     const Zc = scale(cameraRef.current);
@@ -446,13 +232,6 @@ export default function Canvas() {
     setSelectedIds([]);
     setFocusId(null);
   };
-  const textToHtml = (t = "") =>
-    t
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/\r\n/g, "\n")
-      .replace(/\n/g, "<br>");
   const combineSelected = ({
     ids,
     combinedText,
@@ -475,7 +254,7 @@ export default function Canvas() {
     setFocusId(id);
   };
 
-  // Shapes ops
+  /** ─────────────── Shapes ops ─────────────── **/
   const addShape = (shape) => {
     const id = Date.now();
     setShapes((ss) => [...ss, { id, ...shape }]);
@@ -497,77 +276,7 @@ export default function Canvas() {
     setSelectedShapeId((sid) => (sid === id ? null : sid));
   };
 
-  // Frames helpers
-  const clearSelectionsAndBlur = () => {
-    setSelectedIds([]);
-    setSelectedShapeId(null);
-    blurActiveEditable();
-  };
-  const tweenRef = useRef(null);
-  const cancelCameraTween = () => {
-    if (tweenRef.current) {
-      cancelAnimationFrame(tweenRef.current.raf);
-      tweenRef.current = null;
-    }
-  };
-  const cameraFromXyZ = (x, y, Z) => {
-    let zoomBase = Z;
-    let zoomExp = 0;
-    while (zoomBase >= 2) {
-      zoomBase /= 2;
-      zoomExp += 1;
-    }
-    while (zoomBase < 0.5) {
-      zoomBase *= 2;
-      zoomExp -= 1;
-    }
-    return { x, y, zoomBase, zoomExp };
-  };
-  const easeInOutCubic = (t) =>
-    t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-  const animateToCamera = (targetCam, { duration = 500 } = {}) => {
-    cancelCameraTween();
-    const startCam = cameraRef.current;
-    const startZ = scale(startCam);
-    const endZ = scale(targetCam);
-    const logStartZ = Math.log(Math.max(1e-9, startZ));
-    const logEndZ = Math.log(Math.max(1e-9, endZ));
-    const startX = startCam.x,
-      startY = startCam.y;
-    const endX = targetCam.x,
-      endY = targetCam.y;
-    const t0 = performance.now();
-    const step = (now) => {
-      const t = Math.min(1, (now - t0) / duration);
-      const u = easeInOutCubic(t);
-      const logZ = logStartZ + (logEndZ - logStartZ) * u;
-      const Zt = Math.exp(logZ);
-      const xt = startX + (endX - startX) * u;
-      const yt = startY + (endY - startY) * u;
-      const cam = cameraFromXyZ(xt, yt, Zt);
-      setCamera(cam);
-      if (t < 1 && tweenRef.current) {
-        tweenRef.current.raf = requestAnimationFrame(step);
-      } else {
-        tweenRef.current = null;
-        setCamera({ ...targetCam });
-      }
-    };
-    tweenRef.current = { raf: requestAnimationFrame(step) };
-  };
-  const jumpToView = (viewCam, animated = true) => {
-    clearSelectionsAndBlur();
-    if (animated) animateToCamera(viewCam, { duration: 520 });
-    else flushSync(() => setCamera({ ...viewCam }));
-  };
-  const prevCountRef = useRef(0);
-  const saveCurrentView = () => {
-    const pre = cameraRef.current;
-    const { camera: norm } = normalizeZoomPure(pre);
-    const idx = (prevCountRef.current += 1);
-    const name = `View ${idx}`;
-    setViews((vs) => [...vs, { id: Date.now(), name, camera: { ...norm } }]);
-  };
+  /** ─────────────── Views helpers ─────────────── **/
   const startRenameView = (v) => {
     if (v.id === "home") return;
     setEditingViewId(v.id);
@@ -591,6 +300,7 @@ export default function Canvas() {
     setEditingName("");
   };
   const updateViewCamera = (id) => {
+    // store a normalized camera
     const { camera: norm } = normalizeZoomPure(cameraRef.current);
     setViews((vs) =>
       vs.map((v) => (v.id === id ? { ...v, camera: { ...norm } } : v))
@@ -603,8 +313,13 @@ export default function Canvas() {
       setEditingName("");
     }
   };
+  const saveCurrentView = () => {
+    const { camera: norm } = normalizeZoomPure(cameraRef.current);
+    const name = `View ${views.filter((v) => v.id !== "home").length + 1}`;
+    setViews((vs) => [...vs, { id: Date.now(), name, camera: { ...norm } }]);
+  };
 
-  // Tasks helpers
+  /** ─────────────── Tasks helpers ─────────────── **/
   const addTaskForNode = (nodeId) => {
     const node = nodes.find((n) => n.id === nodeId);
     if (!node) return;
@@ -626,13 +341,11 @@ export default function Canvas() {
     setTasksOpen(true);
   };
   const goToTask = (task) => {
-    jumpToView(task.camera, true);
+    jumpToView(cameraRef, task.camera, true);
     setSelectedIds([task.nodeId]);
     setSelectedShapeId(null);
   };
-  const removeTask = (id) => {
-    setTasks((ts) => ts.filter((t) => t.id !== id));
-  };
+  const removeTask = (id) => setTasks((ts) => ts.filter((t) => t.id !== id));
   const toggleTaskDone = (id, value) => {
     setTasks((ts) => {
       const updated = ts.map((t) => (t.id === id ? { ...t, done: value } : t));
@@ -650,6 +363,8 @@ export default function Canvas() {
       return [...todo, ...done];
     });
   };
+  // drag reorder within groups
+  const dragRef = useRef(null); // { group:'todo'|'done', idx:number }
   const reorderWithinGroup = (group, fromIdx, toIdx) => {
     setTasks((ts) => {
       const todo = ts.filter((t) => !t.done);
@@ -667,7 +382,6 @@ export default function Canvas() {
       }
     });
   };
-  const dragRef = useRef(null); // { group:'todo'|'done', idx:number }
   const onTaskDragStart = (group, idx) => (e) => {
     dragRef.current = { group, idx };
     e.dataTransfer.effectAllowed = "move";
@@ -687,10 +401,7 @@ export default function Canvas() {
     dragRef.current = null;
   };
 
-  const Z = scale(camera);
-  const doneNodeIds = new Set(tasks.filter((t) => t.done).map((t) => t.nodeId));
-
-  // split handle (draggable)
+  /** ─────────────── Split bar (inside TasksPanel) ─────────────── **/
   const barRef = useRef(null);
   const splitDrag = useRef(false);
   const onSplitDown = (e) => {
@@ -725,361 +436,52 @@ export default function Canvas() {
         userSelect: "none",
         touchAction: "none",
         overscrollBehavior: "none",
-        cursor: isPanning.current ? "grabbing" : "default",
+        cursor: "default",
       }}
       onDoubleClick={handleDoubleClick}
+      onClick={handleSingleClick}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={endPan}
       onPointerCancel={endPan}
       onPointerLeave={onPointerLeave}
     >
-      {/* ── Frames toolbar (top) ─────────────────────────────────────────── */}
-      <div
-        data-ui
-        onPointerDown={(e) => e.stopPropagation()}
-        onDoubleClick={(e) => e.stopPropagation()}
-        style={{
-          position: "absolute",
-          top: 10,
-          left: 12,
-          right: 12,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          gap: 8,
-          zIndex: 1000,
-          pointerEvents: "auto",
-          flexWrap: "wrap",
-        }}
-      >
-        <button
-          title="Go Home (reset)"
-          onClick={(e) => {
-            e.stopPropagation();
-            jumpToView({ x: 0, y: 0, zoomBase: 1, zoomExp: 0 }, true);
-          }}
-          style={chipStyle()}
-        >
-          Home
-        </button>
+      {/* ── Views (top bar) ───────────────────────────── */}
+      <ViewsBar
+        views={views}
+        editingViewId={editingViewId}
+        editingName={editingName}
+        setEditingName={setEditingName}
+        jumpToView={jumpToView.bind(null, cameraRef)}
+        startRenameView={startRenameView}
+        commitRenameView={commitRenameView}
+        updateViewCamera={updateViewCamera}
+        deleteView={deleteView}
+        saveCurrentView={saveCurrentView}
+      />
 
-        <div
-          style={{
-            display: "flex",
-            gap: 8,
-            overflowX: "auto",
-            paddingBottom: 2,
-          }}
-        >
-          {views
-            .filter((v) => v.id !== "home")
-            .map((v) => (
-              <div
-                key={v.id}
-                style={{ display: "inline-flex", flexDirection: "column" }}
-              >
-                {editingViewId === v.id ? (
-                  <>
-                    <input
-                      autoFocus
-                      value={editingName}
-                      onChange={(e) => setEditingName(e.target.value)}
-                      onBlur={() => setTimeout(() => commitRenameView(), 0)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          e.preventDefault();
-                          commitRenameView();
-                        } else if (e.key === "Escape") {
-                          e.preventDefault();
-                          setEditingViewId(null);
-                          setEditingName("");
-                        }
-                      }}
-                      onDoubleClick={(e) => e.stopPropagation()}
-                      onPointerDown={(e) => e.stopPropagation()}
-                      style={{
-                        ...chipStyle("#fff"),
-                        padding: "5px 8px",
-                        width: Math.max(80, editingName.length * 8 + 24),
-                      }}
-                    />
-                    <div
-                      data-ui
-                      onPointerDown={(e) => e.stopPropagation()}
-                      onDoubleClick={(e) => e.stopPropagation()}
-                      style={{
-                        display: "flex",
-                        gap: 6,
-                        marginTop: 4,
-                        alignItems: "center",
-                        justifyContent: "flex-start",
-                      }}
-                    >
-                      <button
-                        title="Update this view to the current pan/zoom"
-                        onPointerDown={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          updateViewCamera(v.id);
-                        }}
-                        style={chipStyle("#eef2ff")}
-                      >
-                        Update to current
-                      </button>
-                      <button
-                        title="Delete this view"
-                        onPointerDown={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          deleteView(v.id);
-                        }}
-                        style={{
-                          ...chipStyle("#fee2e2"),
-                          borderColor: "#fecaca",
-                        }}
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  </>
-                ) : (
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      jumpToView(v.camera, true);
-                    }}
-                    onDoubleClick={(e) => {
-                      e.stopPropagation();
-                      startRenameView(v);
-                    }}
-                    title={`Go to ${v.name} (double-click to rename)`}
-                    style={chipStyle()}
-                  >
-                    {v.name}
-                  </button>
-                )}
-              </div>
-            ))}
-        </div>
+      {/* ── Tasks panel (left) ────────────────────────── */}
+      <TasksPanel
+        tasksOpen={tasksOpen}
+        taskSplit={taskSplit}
+        setTaskSplit={setTaskSplit}
+        setTasksOpen={setTasksOpen}
+        tasks={tasks}
+        nodes={nodes}
+        goToTask={goToTask}
+        toggleTaskDone={toggleTaskDone}
+        removeTask={removeTask}
+        onTaskDragStart={onTaskDragStart}
+        onTaskDragOver={onTaskDragOver}
+        onTaskDrop={onTaskDrop}
+        barRef={barRef}
+        onSplitDown={onSplitDown}
+      />
 
-        <button
-          title="Save current view"
-          onClick={(e) => {
-            e.stopPropagation();
-            saveCurrentView();
-          }}
-          style={chipStyle("#eef2ff")}
-        >
-          + Save view
-        </button>
-      </div>
+      {/* ── Draw toolbar (right) ──────────────────────── */}
+      <DrawToolbar activeTool={activeTool} setActiveTool={setActiveTool} />
 
-      {/* ── Left Tasks bar (collapsible, split To-Do / Done) ─────────────── */}
-      <div
-        data-ui
-        ref={barRef}
-        onPointerDown={(e) => e.stopPropagation()}
-        style={{
-          position: "absolute",
-          top: 60,
-          bottom: 12,
-          left: 12,
-          width: TASKS_W,
-          padding: 8,
-          display: "flex",
-          flexDirection: "column",
-          gap: 6,
-          border: "1px solid #e5e7eb",
-          borderRadius: 10,
-          background: "#fff",
-          boxShadow: "0 8px 24px rgba(0,0,0,0.06)",
-          zIndex: 40,
-          transform: tasksOpen
-            ? "translateX(0)"
-            : `translateX(-${TASKS_W + 16}px)`,
-          transition: "transform 200ms ease",
-          pointerEvents: tasksOpen ? "auto" : "none",
-        }}
-      >
-        <div
-          style={{
-            fontSize: 12,
-            fontWeight: 600,
-            color: "#374151",
-            margin: "2px 4px",
-          }}
-        >
-          Tasks
-        </div>
-
-        <div
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            flex: 1,
-            minHeight: 160,
-          }}
-        >
-          {/* To-Do */}
-          <div
-            style={{
-              flexBasis: `calc(${(taskSplit * 100).toFixed(2)}% - 4px)`,
-              minHeight: 80,
-              overflowY: "auto",
-              paddingRight: 2,
-            }}
-          >
-            {tasks.filter((t) => !t.done).length === 0 && (
-              <div
-                style={{ fontSize: 12, color: "#6b7280", margin: "2px 4px" }}
-              >
-                Select a node → Add to Tasks
-              </div>
-            )}
-            {tasks
-              .filter((t) => !t.done)
-              .map((t, idx) => {
-                const node = nodes.find((n) => n.id === t.nodeId);
-                const title = node
-                  ? firstLineFromHTML(node.text) || "(Untitled)"
-                  : "(Missing node)";
-                return (
-                  <TaskRow
-                    key={t.id}
-                    title={title}
-                    done={false}
-                    onGo={() => goToTask(t)}
-                    onToggle={() => toggleTaskDone(t.id, true)}
-                    onRemove={() => removeTask(t.id)}
-                    draggableProps={{
-                      draggable: true,
-                      onDragStart: onTaskDragStart("todo", idx),
-                      onDragOver: onTaskDragOver("todo", idx),
-                      onDrop: onTaskDrop,
-                    }}
-                  />
-                );
-              })}
-          </div>
-
-          {/* Divider handle */}
-          <div
-            onPointerDown={onSplitDown}
-            style={{
-              height: 8,
-              margin: "4px 0",
-              borderRadius: 4,
-              background:
-                "linear-gradient(180deg, rgba(0,0,0,0.04), rgba(0,0,0,0.08))",
-              cursor: "row-resize",
-              userSelect: "none",
-            }}
-            title="Drag to resize"
-          />
-
-          {/* Done */}
-          <div
-            style={{
-              flex: 1,
-              minHeight: 80,
-              overflowY: "auto",
-              paddingRight: 2,
-            }}
-          >
-            {tasks
-              .filter((t) => t.done)
-              .map((t, idx) => {
-                const node = nodes.find((n) => n.id === t.nodeId);
-                const title = node
-                  ? firstLineFromHTML(node.text) || "(Untitled)"
-                  : "(Missing node)";
-                return (
-                  <TaskRow
-                    key={t.id}
-                    title={title}
-                    done
-                    onGo={() => goToTask(t)}
-                    onToggle={() => toggleTaskDone(t.id, false)}
-                    onRemove={() => removeTask(t.id)}
-                    draggableProps={{
-                      draggable: true,
-                      onDragStart: onTaskDragStart("done", idx),
-                      onDragOver: onTaskDragOver("done", idx),
-                      onDrop: onTaskDrop,
-                    }}
-                  />
-                );
-              })}
-          </div>
-        </div>
-      </div>
-
-      {/* Collapse / expand toggles */}
-      {tasksOpen ? (
-        <button
-          data-ui
-          onPointerDown={(e) => e.stopPropagation()}
-          onClick={() => setTasksOpen(false)}
-          title="Hide tasks"
-          style={sideToggleStyle(12 + TASKS_W + 8)}
-        >
-          ‹
-        </button>
-      ) : (
-        <button
-          data-ui
-          onPointerDown={(e) => e.stopPropagation()}
-          onClick={() => setTasksOpen(true)}
-          title="Show tasks"
-          style={sideToggleStyle(12)}
-        >
-          ☰
-        </button>
-      )}
-
-      {/* ── Right draw toolbar ───────────────────────────────────────────── */}
-      <div
-        data-ui
-        onPointerDown={(e) => e.stopPropagation()}
-        style={{
-          position: "absolute",
-          top: "50%",
-          right: 12,
-          transform: "translateY(-50%)",
-          display: "flex",
-          flexDirection: "column",
-          gap: 8,
-          zIndex: 60,
-        }}
-      >
-        {[
-          { key: "line", label: "／" },
-          { key: "rect", label: "▭" },
-          { key: "circle", label: "◯" },
-        ].map((b) => (
-          <button
-            key={b.key}
-            onClick={() => setActiveTool((t) => (t === b.key ? null : b.key))}
-            title={`Draw ${b.key}`}
-            style={{
-              width: 36,
-              height: 36,
-              borderRadius: 8,
-              border: "1px solid #e5e7eb",
-              background: activeTool === b.key ? "#eef2ff" : "#fff",
-              boxShadow: "0 2px 6px rgba(0,0,0,0.08)",
-              cursor: "pointer",
-              fontSize: 18,
-              lineHeight: "36px",
-            }}
-          >
-            {b.label}
-          </button>
-        ))}
-      </div>
-
-      {/* ── Render order: Grid → Shapes → Nodes → DrawOverlay ────────────── */}
+      {/* ── Render order: Grid → Shapes → Nodes → DrawOverlay ── */}
       <Grid camera={camera} />
 
       <ShapesLayer
@@ -1147,7 +549,7 @@ export default function Canvas() {
             )
           );
         }}
-        onScaleNode={(id, newScale) => setNodeScale(id, newScale)}
+        onScaleNode={setNodeScale}
         onDeleteNode={(id) => {
           setNodes((ns) => ns.filter((n) => n.id !== id));
           setTasks((ts) => ts.filter((t) => t.nodeId !== id));
@@ -1161,7 +563,7 @@ export default function Canvas() {
           )
         }
         onBackgroundClickAway={clearSelectionsAndBlur}
-        onAddTaskNode={(id) => addTaskForNode(id)}
+        onAddTaskNode={addTaskForNode}
         doneNodeIds={doneNodeIds}
       />
 
@@ -1171,111 +573,11 @@ export default function Canvas() {
           camera={camera}
           onDone={(shapeOrNull) => {
             if (shapeOrNull) addShape(shapeOrNull);
-            setActiveTool(null);
+            if (activeTool !== "text") setActiveTool(null);
           }}
-          onCancel={() => setActiveTool(null)}
+          onCancel={() => activeTool !== "text" && setActiveTool(null)}
         />
       )}
-    </div>
-  );
-}
-
-// ─── Small helpers / presentational bits ───────────────────────────────────
-function chipStyle(bg = "#fff") {
-  return {
-    padding: "6px 10px",
-    borderRadius: 8,
-    border: "1px solid #e5e7eb",
-    background: bg,
-    boxShadow: "0 2px 6px rgba(0,0,0,0.06)",
-    fontSize: 12,
-    cursor: "pointer",
-    userSelect: "none",
-    whiteSpace: "nowrap",
-  };
-}
-function sideToggleStyle(leftPx) {
-  return {
-    position: "absolute",
-    left: leftPx,
-    top: "50%",
-    transform: "translateY(-50%)",
-    width: 36,
-    height: 36,
-    borderRadius: 8,
-    border: "1px solid #e5e7eb",
-    background: "#fff",
-    boxShadow: "0 2px 6px rgba(0,0,0,0.08)",
-    cursor: "pointer",
-    zIndex: 41,
-    lineHeight: "36px",
-    fontSize: 16,
-  };
-}
-function firstLineFromHTML(html = "") {
-  const div = document.createElement("div");
-  div.innerHTML = html;
-  const text = (div.textContent || "").replace(/\u00A0/g, " ").trim();
-  const line = text.split(/\r?\n/)[0]?.trim() || "";
-  return line;
-}
-function TaskRow({ title, done, onGo, onToggle, onRemove, draggableProps }) {
-  return (
-    <div
-      {...draggableProps}
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 8,
-        padding: "8px 10px",
-        border: "1px solid #e5e7eb",
-        borderRadius: 8,
-        background: done ? "#f0fdf4" : "#fff",
-        marginBottom: 6,
-      }}
-    >
-      <input
-        type="checkbox"
-        checked={done}
-        onChange={(e) => onToggle?.(e.target.checked)}
-        title={done ? "Mark as to-do" : "Mark as done"}
-        style={{ cursor: "pointer" }}
-      />
-      <div
-        onClick={onGo}
-        title="Go to task"
-        style={{
-          flex: 1,
-          fontSize: 12,
-          color: "#111827",
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
-          cursor: "pointer",
-        }}
-      >
-        {title}
-      </div>
-      <button
-        onClick={(e) => {
-          e.stopPropagation();
-          onRemove?.();
-        }}
-        title="Remove task"
-        style={{
-          width: 22,
-          height: 22,
-          lineHeight: "20px",
-          fontSize: 14,
-          borderRadius: 6,
-          border: "1px solid #e5e7eb",
-          background: "#fff",
-          color: "#ef4444",
-          cursor: "pointer",
-        }}
-      >
-        ×
-      </button>
     </div>
   );
 }

@@ -492,15 +492,21 @@ export default function NodesLayer({
         <div
           data-ui
           style={{
-            position: "fixed",
-            left: Math.min(dragSel.x0, dragSel.x1),
-            top: Math.min(dragSel.y0, dragSel.y1),
-            width: Math.abs(dragSel.x1 - dragSel.x0),
-            height: Math.abs(dragSel.y1 - dragSel.y0),
-            background: "rgba(59,130,246,0.12)",
-            border: `1px solid ${BLUE}`,
-            pointerEvents: "none",
-            zIndex: 5,
+            fontSize: `${fontPx}px`,
+            lineHeight: 1.2,
+            textRendering: "optimizeLegibility",
+            WebkitFontSmoothing: "antialiased",
+            MozOsxFontSmoothing: "grayscale",
+            padding: "2px 4px",
+            background: "transparent",
+            userSelect: "text",
+            whiteSpace: "pre-wrap", // Changed from "normal" to preserve line breaks but allow some wrapping
+            wordBreak: "normal", // Changed from "break-word" to prevent aggressive breaking
+            overflowWrap: "break-word", // Only break long words when absolutely necessary
+            width: "max-content", // Prevent container-based wrapping
+            minWidth: 1,
+            minHeight: 1,
+            background: isDone ? "#dcfce7" : "transparent", // ← pale green for done
           }}
         />
       )}
@@ -591,6 +597,7 @@ export default function NodesLayer({
             bottom: 12,
             transform: "translateX(-50%)",
             display: "inline-flex",
+            width: "max-content", // Add this
             gap: 8,
             padding: "6px 8px",
             background: "#fff",
@@ -680,7 +687,7 @@ function NodeItem({
   onEditorFocus,
   onEditorBlur,
   onAddTask,
-  isDone
+  isDone,
 }) {
   const wrapperRef = useRef(null);
   const textRef = useRef(null);
@@ -707,8 +714,15 @@ function NodeItem({
   useEffect(() => {
     if (wrapperRef.current) setWrapperRef(wrapperRef.current);
     if (textRef.current) setTextRef(textRef.current);
-  }, [setWrapperRef, setTextRef]);
-
+  }, [
+    setWrapperRef,
+    setTextRef,
+    fontPx,
+    Z,
+    selfScale,
+    effectiveScale,
+    node.text,
+  ]);
   // Uncontrolled: only set HTML when prop changes and not focused
   useEffect(() => {
     const el = textRef.current;
@@ -838,7 +852,7 @@ function NodeItem({
         position: "absolute",
         left: leftScr,
         top: topScr,
-        display: "inline-block",
+        display: "inline",
         boxShadow: selected ? `0 0 0 ${RING_WIDTH}px ${BLUE}` : "none",
         cursor: selected ? "move" : "text",
       }}
@@ -850,6 +864,7 @@ function NodeItem({
     >
       <div
         ref={textRef}
+        className="node-text-unconstrained"
         contentEditable
         suppressContentEditableWarning
         onFocus={() => onEditorFocus?.()}
