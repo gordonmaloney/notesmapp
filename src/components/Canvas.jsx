@@ -295,16 +295,37 @@ export default function Canvas() {
     setSelectedIds([]);
     setFocusId(null);
   };
-  const combineSelected = ({ ids, combinedText, avgX, avgY, avgScale }) => {
-    if (!ids || ids.length < 2) return;
-    const id = Date.now();
-    setNodes((ns) => [
-      ...ns.filter((n) => !ids.includes(n.id)),
-      { id, x: avgX, y: avgY, text: combinedText, scale: avgScale },
-    ]);
-    setSelectedIds([id]);
-    setFocusId(id);
-  };
+  
+const textToHtml = (t = "") =>
+  t
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\r\n/g, "\n")
+    .replace(/\n/g, "<br>");
+
+const combineSelected = ({
+  ids,
+  combinedText,
+  combinedHtml,
+  avgX,
+  avgY,
+  avgScale,
+}) => {
+  if (!ids || ids.length < 2) return;
+  const id = Date.now();
+
+  // Prefer rich HTML if provided; otherwise convert plain text to HTML safely
+  const html =
+    combinedHtml != null ? combinedHtml : textToHtml(combinedText || "");
+
+  setNodes((ns) => [
+    ...ns.filter((n) => !ids.includes(n.id)),
+    { id, x: avgX, y: avgY, text: html, scale: avgScale },
+  ]);
+  setSelectedIds([id]);
+  setFocusId(id);
+};
 
   // 🔷 Shapes ops
   const addShape = (shape) => {

@@ -54,6 +54,16 @@ export default function NodesLayer({
     else textRefs.current.delete(id);
   };
 
+  // put this helper near the top of NodesLayer.jsx
+  const cleanHTML = (html) =>
+    (html || "")
+      .replace(/\r\n/g, "\n")
+      // collapse 3+ <br>s
+      .replace(/(\s*<br\s*\/?>\s*){3,}/gi, "<br><br>")
+      // trim leading/trailing <br>s
+      .replace(/^(?:\s*<br\s*\/?>)+/i, "")
+      .replace(/(?:\s*<br\s*\/?>)+$/i, "");
+
   // ===== Formatting toolbar state =====
   const [focusedEditorId, setFocusedEditorId] = useState(null);
   const savedRangeRef = useRef(null);
@@ -383,26 +393,29 @@ export default function NodesLayer({
     e.stopPropagation();
     onDeleteSelected?.();
   };
+  // replace your onCombineSelectedClick with this:
   const onCombineSelectedClick = (e) => {
     e.preventDefault();
     e.stopPropagation();
     if (!selectedIds || selectedIds.length < 2) return;
 
+    // Sort by world Y then X (top→bottom, then left→right)
     const byId = new Map(nodes.map((n) => [n.id, n]));
     const selectedNodes = selectedIds
       .map((id) => byId.get(id))
       .filter(Boolean)
       .sort((a, b) => a.y - b.y || a.x - b.x);
 
-    const parts = selectedNodes.map((n) => {
+    // Pull LIVE HTML from DOM (captures unsaved edits & styling)
+    const partsHtml = selectedNodes.map((n) => {
       const el = textRefs.current.get(n.id);
-      const live = el?.innerText;
-      const source =
-        typeof live === "string" && live.length > 0 ? live : n.text || "";
-      return normalizeText(source).trim();
+      const liveHtml = el?.innerHTML;
+      const source = typeof liveHtml === "string" ? liveHtml : n.text || "";
+      return cleanHTML(source);
     });
 
-    const combinedText = parts.join("\n\n");
+    const combinedHtml = partsHtml.filter(Boolean).join("<br><br>");
+
     const avgX =
       selectedNodes.reduce((s, n) => s + n.x, 0) / selectedNodes.length;
     const avgY =
@@ -413,7 +426,7 @@ export default function NodesLayer({
 
     onCombineSelected?.({
       ids: selectedIds.slice(),
-      combinedText,
+      combinedHtml,
       avgX,
       avgY,
       avgScale,
