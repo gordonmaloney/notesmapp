@@ -1,14 +1,15 @@
+// src/components/DrawOverlay.jsx
 import { useRef, useState, useEffect } from "react";
 import { screenToWorld } from "../utils/math";
 import { scale } from "../hooks/useCamera";
 
 export default function DrawOverlay({ tool, camera, onDone, onCancel }) {
   const ref = useRef(null);
-  const [draft, setDraft] = useState(null);
+  const [draft, setDraft] = useState(null); // { start:{x,y}, end:{x,y} in WORLD }
   const pid = useRef(null);
   const Z = scale(camera);
 
-  // Esc cancels the tool
+  // Esc cancels
   useEffect(() => {
     const onKey = (e) => {
       if (e.key === "Escape") {
@@ -20,32 +21,30 @@ export default function DrawOverlay({ tool, camera, onDone, onCancel }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [onCancel]);
 
+  const toWorld = (e) => {
+    const rect = ref.current.getBoundingClientRect();
+    return screenToWorld(
+      { x: e.clientX - rect.left, y: e.clientY - rect.top },
+      camera
+    );
+  };
+
   const onPointerDown = (e) => {
     if (e.button !== 0) {
-      if (e.button === 2) onCancel?.(); // right-click cancels too
+      if (e.button === 2) onCancel?.();
       return;
     }
     pid.current = e.pointerId;
     ref.current?.setPointerCapture?.(e.pointerId);
-
-    const rect = e.currentTarget.getBoundingClientRect();
-    const start = screenToWorld(
-      { x: e.clientX - rect.left, y: e.clientY - rect.top },
-      camera
-    );
+    const start = toWorld(e);
     setDraft({ start, end: start });
-
     e.preventDefault();
     e.stopPropagation();
   };
 
   const onPointerMove = (e) => {
     if (!draft || pid.current !== e.pointerId) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const end = screenToWorld(
-      { x: e.clientX - rect.left, y: e.clientY - rect.top },
-      camera
-    );
+    const end = toWorld(e);
     setDraft((d) => (d ? { ...d, end } : d));
     e.preventDefault();
     e.stopPropagation();
@@ -59,6 +58,7 @@ export default function DrawOverlay({ tool, camera, onDone, onCancel }) {
     let shape = null;
     if (draft) {
       const { start, end } = draft;
+
       if (tool === "line") {
         if (start.x !== end.x || start.y !== end.y) {
           shape = {
@@ -76,15 +76,18 @@ export default function DrawOverlay({ tool, camera, onDone, onCancel }) {
         const h = Math.abs(end.y - start.y);
         if (w > 0.01 && h > 0.01) shape = { type: "rect", x, y, w, h };
       } else if (tool === "circle") {
-        const r = Math.hypot(end.x - start.x, end.y - start.y);
-        if (r > 0.01) shape = { type: "circle", cx: start.x, cy: start.y, r };
+        // ✅ circle from drag-box (start/end are opposite corners)
+        const cx = (start.x + end.x) / 2;
+        const cy = (start.y + end.y) / 2;
+        const r =
+          0.5 * Math.max(Math.abs(end.x - start.x), Math.abs(end.y - start.y));
+        if (r > 0.01) shape = { type: "circle", cx, cy, r };
       }
     }
 
     setDraft(null);
     onDone?.(shape);
-    onCancel?.(); // 👈 auto-unselect tool after finishing (or tiny drag)
-
+    onCancel?.(); // auto-unselect tool after finishing/cancel
     e.preventDefault();
     e.stopPropagation();
   };
@@ -92,6 +95,16 @@ export default function DrawOverlay({ tool, camera, onDone, onCancel }) {
   // world → screen helpers for preview
   const w2sX = (wx) => wx * Z + camera.x;
   const w2sY = (wy) => wy * Z + camera.y;
+
+  // Preview geometry for circle-from-corner
+  const previewCircle = (d) => {
+    const { start, end } = d;
+    const cx = (start.x + end.x) / 2;
+    const cy = (start.y + end.y) / 2;
+    const r =
+      0.5 * Math.max(Math.abs(end.x - start.x), Math.abs(end.y - start.y));
+    return { cx: w2sX(cx), cy: w2sY(cy), r: r * Z };
+  };
 
   return (
     <div
@@ -145,21 +158,20 @@ export default function DrawOverlay({ tool, camera, onDone, onCancel }) {
               strokeWidth={1}
             />
           )}
-          {tool === "circle" && (
-            <circle
-              cx={w2sX(draft.start.x)}
-              cy={w2sY(draft.start.y)}
-              r={
-                Math.hypot(
-                  draft.end.x - draft.start.x,
-                  draft.end.y - draft.start.y
-                ) * Z
-              }
-              fill="rgba(59,130,246,0.08)"
-              stroke="#111"
-              strokeWidth={1}
-            />
-          )}
+          {tool === "circle" &&
+            (() => {
+              const { cx, cy, r } = previewCircle(draft);
+              return (
+                <circle
+                  cx={cx}
+                  cy={cy}
+                  r={r}
+                  fill="rgba(59,130,246,0.08)"
+                  stroke="#111"
+                  strokeWidth={1}
+                />
+              );
+            })()}
         </svg>
       )}
     </div>
