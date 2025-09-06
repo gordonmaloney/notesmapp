@@ -20,12 +20,23 @@ export default function Canvas() {
   const { camera, setCamera } = useCamera();
   const [nodes, setNodes] = useState([]);
   const [focusId, setFocusId] = useState(null);
-  const [selectedIds, setSelectedIds] = useState([]); // nodes multi-select
+  const [selectedIds, setSelectedIds] = useState([]);
 
   // 🔷 shapes
-  const [shapes, setShapes] = useState([]); // {id,type:'line'|'rect'|'circle', ...world geom}
+  const [shapes, setShapes] = useState([]);
   const [selectedShapeId, setSelectedShapeId] = useState(null);
   const [activeTool, setActiveTool] = useState(null); // 'line'|'rect'|'circle'|null
+
+  // 🔷 frames (saved views)
+  const [views, setViews] = useState([
+    {
+      id: "home",
+      name: "Home",
+      camera: { x: 0, y: 0, zoomBase: 1, zoomExp: 0 },
+    },
+  ]);
+  const [editingViewId, setEditingViewId] = useState(null);
+  const [editingName, setEditingName] = useState("");
 
   const containerRef = useRef(null);
 
@@ -37,7 +48,7 @@ export default function Canvas() {
   // Hover (for key zoom anchoring)
   const hoverRef = useRef({ inside: false, ax: 0, ay: 0 });
 
-  // live camera in ref
+  // live camera in ref (for stable handlers)
   const cameraRef = useRef(camera);
   useEffect(() => {
     cameraRef.current = camera;
@@ -65,11 +76,12 @@ export default function Canvas() {
     if (
       ae &&
       (ae.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName))
-    )
+    ) {
       ae.blur();
+    }
   };
 
-  // ESC clears node selection & shape selection and blurs
+  // ESC clears selections and blurs
   useEffect(() => {
     const onKey = (e) => {
       if (
@@ -79,18 +91,16 @@ export default function Canvas() {
           /^(INPUT|TEXTAREA|SELECT)$/.test(e.target?.tagName)
         )
       ) {
-        setSelectedIds([]);
-        setSelectedShapeId(null);
-        blurActiveEditable();
-        setActiveTool(null)
+        clearSelectionsAndBlur();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // Anchor-locked zoom helper
+  // ---------- Zoom helpers ----------
   const zoomAt = (ax, ay, factor) => {
+    cancelCameraTween();
     const pre = cameraRef.current;
     const W = screenToWorld({ x: ax, y: ay }, pre);
     const proposed = { ...pre, zoomBase: pre.zoomBase * factor };
@@ -107,7 +117,6 @@ export default function Canvas() {
     flushSync(() => setCamera({ ...post, x: newX, y: newY }));
   };
 
-  // Wheel: ctrl/cmd zoom, else pan
   const handleWheelZoom = (e) => {
     const deltaPx =
       e.deltaMode === 1
@@ -126,12 +135,15 @@ export default function Canvas() {
     const el = containerRef.current;
     if (!el) return;
     const onWheel = (ev) => {
+      // cancel any running tween on user input
       if (ev.ctrlKey || ev.metaKey) {
         ev.preventDefault();
         handleWheelZoom(ev);
+        cancelCameraTween();
         return;
       }
       setCamera((c) => ({ ...c, x: c.x - ev.deltaX, y: c.y - ev.deltaY }));
+      cancelCameraTween();
       ev.preventDefault();
     };
     el.addEventListener("wheel", onWheel, { passive: false });
@@ -142,8 +154,8 @@ export default function Canvas() {
   const onPointerDown = (e) => {
     const left = e.button === 0,
       mid = e.button === 1;
-    // DON’T deselect here; NodesLayer owns click-away (preserves marquee)
     if (mid || (left && (e.shiftKey || spaceDown.current))) {
+      cancelCameraTween();
       isPanning.current = true;
       lastPos.current = { x: e.clientX, y: e.clientY };
       e.currentTarget.setPointerCapture?.(e.pointerId);
@@ -176,7 +188,7 @@ export default function Canvas() {
 
   // Reset & key zoom (= / -)
   const resetView = () =>
-    flushSync(() => setCamera({ x: 0, y: 0, zoomBase: 1, zoomExp: 0 }));
+    jumpToView({ x: 0, y: 0, zoomBase: 1, zoomExp: 0 }, true);
   useEffect(() => {
     const onKey = (e) => {
       if (
@@ -185,6 +197,7 @@ export default function Canvas() {
           /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName))
       )
         return;
+
       if (e.key === "0") {
         e.preventDefault();
         resetView();
@@ -193,8 +206,9 @@ export default function Canvas() {
       const rect = containerRef.current?.getBoundingClientRect();
       if (!rect) return;
       const { inside, ax: hx, ay: hy } = hoverRef.current;
-      const ax = inside ? hx : rect.width / 2,
-        ay = inside ? hy : rect.height / 2;
+      const ax = inside ? hx : rect.width / 2;
+      const ay = inside ? hy : rect.height / 2;
+
       if (
         e.key === "=" ||
         e.key === "+" ||
@@ -215,7 +229,7 @@ export default function Canvas() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // Double-click to add node
+  // Double-click to add node (under cursor, with per-node scale)
   const handleDoubleClick = (e) => {
     const rect = containerRef.current.getBoundingClientRect();
     const screen = { x: e.clientX - rect.left, y: e.clientY - rect.top };
@@ -229,10 +243,10 @@ export default function Canvas() {
     ]);
     setFocusId(id);
     setSelectedIds([id]);
-    setSelectedShapeId(null); // deselect shape if any
+    setSelectedShapeId(null);
   };
 
-  // Node movement/scaling/deletion
+  // Node ops
   const moveSelectedByScreen = (dx, dy) => {
     if (!selectedIds.length) return;
     const Zc = scale(cameraRef.current);
@@ -267,12 +281,12 @@ export default function Canvas() {
     setFocusId(id);
   };
 
-  // 🔷 Shape helpers
+  // 🔷 Shapes ops
   const addShape = (shape) => {
     const id = Date.now();
     setShapes((ss) => [...ss, { id, ...shape }]);
     setSelectedShapeId(id);
-    setSelectedIds([]); // deselect nodes when selecting a shape
+    setSelectedIds([]);
     blurActiveEditable();
   };
   const updateShape = (id, updater) => {
@@ -289,21 +303,122 @@ export default function Canvas() {
     setSelectedShapeId((sid) => (sid === id ? null : sid));
   };
 
-  const Z = scale(camera);
-
-
-
+  // ---------- Frames helpers ----------
   const clearSelectionsAndBlur = () => {
     setSelectedIds([]);
     setSelectedShapeId(null);
-    const ae = document.activeElement;
-    if (
-      ae &&
-      (ae.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName))
-    ) {
-      ae.blur();
+    blurActiveEditable();
+  };
+
+  // tween infrastructure
+  const tweenRef = useRef(null);
+
+  const cancelCameraTween = () => {
+    if (tweenRef.current) {
+      cancelAnimationFrame(tweenRef.current.raf);
+      tweenRef.current = null;
     }
   };
+
+  // build camera from desired x,y and total Z, normalized into {zoomBase, zoomExp}
+  const cameraFromXyZ = (x, y, Z) => {
+    let zoomBase = Z;
+    let zoomExp = 0;
+    while (zoomBase >= 2) {
+      zoomBase /= 2;
+      zoomExp += 1;
+    }
+    while (zoomBase < 0.5) {
+      zoomBase *= 2;
+      zoomExp -= 1;
+    }
+    return { x, y, zoomBase, zoomExp };
+  };
+
+  const easeInOutCubic = (t) =>
+    t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+
+  const animateToCamera = (targetCam, { duration = 500 } = {}) => {
+    cancelCameraTween();
+    const startCam = cameraRef.current;
+    const startZ = scale(startCam);
+    const endZ = scale(targetCam);
+
+    // avoid log(0)
+    const logStartZ = Math.log(Math.max(1e-9, startZ));
+    const logEndZ = Math.log(Math.max(1e-9, endZ));
+
+    const startX = startCam.x,
+      startY = startCam.y;
+    const endX = targetCam.x,
+      endY = targetCam.y;
+
+    const t0 = performance.now();
+
+    const step = (now) => {
+      const t = Math.min(1, (now - t0) / duration);
+      const u = easeInOutCubic(t);
+
+      // zoom: multiplicative lerp (log space)
+      const logZ = logStartZ + (logEndZ - logStartZ) * u;
+      const Zt = Math.exp(logZ);
+
+      // pan: linear in screen pixels
+      const xt = startX + (endX - startX) * u;
+      const yt = startY + (endY - startY) * u;
+
+      const cam = cameraFromXyZ(xt, yt, Zt);
+      setCamera(cam);
+
+      if (t < 1 && tweenRef.current) {
+        tweenRef.current.raf = requestAnimationFrame(step);
+      } else {
+        tweenRef.current = null;
+        // final snap to exact targetCam (already normalized)
+        setCamera({ ...targetCam });
+      }
+    };
+
+    tweenRef.current = { raf: requestAnimationFrame(step) };
+  };
+
+  const jumpToView = (viewCam, animated = true) => {
+    clearSelectionsAndBlur();
+    if (animated) animateToCamera(viewCam, { duration: 520 });
+    else flushSync(() => setCamera({ ...viewCam }));
+  };
+
+  const prevCountRef = useRef(0); // View 1, View 2, …
+
+  const saveCurrentView = () => {
+    const pre = cameraRef.current;
+    // ensure normalized (no rebase)
+    const { camera: norm } = normalizeZoomPure(pre);
+    const idx = (prevCountRef.current += 1);
+    const name = `View ${idx}`;
+    setViews((vs) => [...vs, { id: Date.now(), name, camera: { ...norm } }]);
+  };
+
+  const startRenameView = (v) => {
+    if (v.id === "home") return; // don't rename Home
+    setEditingViewId(v.id);
+    setEditingName(v.name);
+  };
+
+  const commitRenameView = () => {
+    const name = editingName.trim();
+    if (editingViewId) {
+      setViews((vs) =>
+        vs.map((v) =>
+          v.id === editingViewId ? { ...v, name: name || v.name } : v
+        )
+      );
+    }
+    setEditingViewId(null);
+    setEditingName("");
+  };
+
+  const Z = scale(camera);
 
   return (
     <div
@@ -326,9 +441,97 @@ export default function Canvas() {
       onPointerCancel={endPan}
       onPointerLeave={onPointerLeave}
     >
-      {/* Right-side toolbar */}
+      {/* 🔷 Frames toolbar (top) */}
       <div
         data-ui
+        onPointerDown={(e) => e.stopPropagation()}
+        style={{
+          position: "absolute",
+          top: 10,
+          left: 12,
+          right: 12,
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          zIndex: 1000,
+          pointerEvents: "auto",
+          flexWrap: "wrap",
+        }}
+      >
+        {/* Home chip */}
+        <button
+          title="Go Home (reset)"
+          onClick={() =>
+            jumpToView({ x: 0, y: 0, zoomBase: 1, zoomExp: 0 }, true)
+          }
+          style={chipStyle()}
+        >
+          Home
+        </button>
+
+        {/* Save view */}
+        <button
+          title="Save current view"
+          onClick={saveCurrentView}
+          style={chipStyle("#eef2ff")}
+        >
+          + Save view
+        </button>
+
+        {/* Saved views */}
+        <div
+          style={{
+            display: "flex",
+            gap: 8,
+            overflowX: "auto",
+            paddingBottom: 2,
+          }}
+        >
+          {views
+            .filter((v) => v.id !== "home")
+            .map((v) => (
+              <div key={v.id} style={{ display: "inline-flex" }}>
+                {editingViewId === v.id ? (
+                  <input
+                    autoFocus
+                    value={editingName}
+                    onChange={(e) => setEditingName(e.target.value)}
+                    onBlur={commitRenameView}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        commitRenameView();
+                      } else if (e.key === "Escape") {
+                        e.preventDefault();
+                        setEditingViewId(null);
+                        setEditingName("");
+                      }
+                    }}
+                    style={{
+                      ...chipStyle("#fff"),
+                      padding: "5px 8px",
+                      width: Math.max(80, editingName.length * 8 + 24),
+                    }}
+                  />
+                ) : (
+                  <button
+                    onClick={() => jumpToView(v.camera, true)}
+                    onDoubleClick={() => startRenameView(v)}
+                    title={`Go to ${v.name} (double-click to rename)`}
+                    style={chipStyle()}
+                  >
+                    {v.name}
+                  </button>
+                )}
+              </div>
+            ))}
+        </div>
+      </div>
+
+      {/* Right-side draw toolbar */}
+      <div
+        data-ui
+        onPointerDown={(e) => e.stopPropagation()}
         style={{
           position: "absolute",
           top: "50%",
@@ -337,9 +540,8 @@ export default function Canvas() {
           display: "flex",
           flexDirection: "column",
           gap: 8,
-          zIndex: 1000,
+          zIndex: 60,
         }}
-        onPointerDown={(e) => e.stopPropagation()}
       >
         {[
           { key: "line", label: "／" },
@@ -369,13 +571,14 @@ export default function Canvas() {
 
       <Grid camera={camera} />
 
-      {/* Shapes under nodes (so shapes don't block text editing) */}
+      {/* Shapes under nodes */}
       <ShapesLayer
         shapes={shapes}
         camera={camera}
         Z={Z}
         selectedId={selectedShapeId}
         onSelect={(id) => {
+          cancelCameraTween();
           setSelectedShapeId(id);
           setSelectedIds([]);
           blurActiveEditable();
@@ -385,7 +588,7 @@ export default function Canvas() {
           const dxW = dx / Zc,
             dyW = dy / Zc;
           updateShape(id, (s) => {
-            if (s.type === "line")
+            if (s.type === "line") {
               return {
                 ...s,
                 x1: s.x1 + dxW,
@@ -393,6 +596,7 @@ export default function Canvas() {
                 x2: s.x2 + dxW,
                 y2: s.y2 + dyW,
               };
+            }
             if (s.type === "rect") return { ...s, x: s.x + dxW, y: s.y + dyW };
             if (s.type === "circle")
               return { ...s, cx: s.cx + dxW, cy: s.cy + dyW };
@@ -414,6 +618,7 @@ export default function Canvas() {
         selectedIds={selectedIds}
         onSetSelection={setSelectedIds}
         onSelectOne={(id) => {
+          cancelCameraTween();
           setSelectedIds([id]);
           setSelectedShapeId(null);
         }}
@@ -433,19 +638,6 @@ export default function Canvas() {
             )
           );
         }}
-        onBackgroundClickAway={() => {
-          // clear BOTH selections and blur editor
-          setSelectedIds([]);
-          setSelectedShapeId(null);
-          const ae = document.activeElement;
-          if (
-            ae &&
-            (ae.isContentEditable ||
-              /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName))
-          ) {
-            ae.blur();
-          }
-        }}
         onScaleNode={(id, newScale) => setNodeScale(id, newScale)}
         onDeleteNode={(id) => {
           setNodes((ns) => ns.filter((n) => n.id !== id));
@@ -456,9 +648,10 @@ export default function Canvas() {
         onChange={(id, text) =>
           setNodes((ns) => ns.map((n) => (n.id === id ? { ...n, text } : n)))
         }
+        onBackgroundClickAway={clearSelectionsAndBlur}
       />
 
-      {/* Draw overlay (captures drag to create shape) */}
+      {/* Draw overlay */}
       {activeTool && (
         <DrawOverlay
           tool={activeTool}
@@ -467,9 +660,23 @@ export default function Canvas() {
             if (shapeOrNull) addShape(shapeOrNull);
             setActiveTool(null);
           }}
-          onCancel={() => setActiveTool(null)} // 👈 Esc / right-click cancels
+          onCancel={() => setActiveTool(null)}
         />
       )}
     </div>
   );
+}
+
+function chipStyle(bg = "#fff") {
+  return {
+    padding: "6px 10px",
+    borderRadius: 8,
+    border: "1px solid #e5e7eb",
+    background: bg,
+    boxShadow: "0 2px 6px rgba(0,0,0,0.06)",
+    fontSize: 12,
+    cursor: "pointer",
+    userSelect: "none",
+    whiteSpace: "nowrap",
+  };
 }
