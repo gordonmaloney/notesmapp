@@ -4,16 +4,15 @@ const BLUE = "#3b82f6";
 const RING_WIDTH = 2;
 const RING_HIT = 8;
 
-const HANDLE_SIZE = 12; // single-node resize handle
+const HANDLE_SIZE = 12;
 const HANDLE_OFFSET = 6;
 
-const GROUP_HANDLE = 14; // group resize handle
+const GROUP_HANDLE = 14;
 const GROUP_OFFSET = 8;
 
-const DELETE_SIZE = 12; // red delete dot
+const DELETE_SIZE = 12;
 const DELETE_OFFSET = 6;
 
-// Resize sensitivity (px per 2×). Shift=precise, Alt/Option=coarse.
 const PX_PER_DOUBLE_BASE = 60;
 const PX_PER_DOUBLE_SHIFT = 120;
 const PX_PER_DOUBLE_ALT = 30;
@@ -23,35 +22,29 @@ export default function NodesLayer({
   camera,
   Z,
 
-  // selection API
   selectedIds,
   onSetSelection,
   onSelectOne,
   onToggleOne,
 
-  // group ops
   onDragSelectedByScreen,
-  onGroupScaleCommit, // (factor)
+  onGroupScaleCommit,
   onDeleteSelected,
-  onCombineSelected, // ({ ids, combinedText, avgX, avgY, avgScale })
+  onCombineSelected,
 
-  // single ops
-  onScaleNode, // (id, newScale) — live while dragging handle
-  onDeleteNode, // (id)
-
+  onScaleNode,
+  onDeleteNode,
 
   onBackgroundClickAway,
 
-  // focus + text update
   focusId,
-  onChange, // (id, text)
+  onChange, // (id, html)
 }) {
   const { x: camX, y: camY } = camera;
   const rootRef = useRef(null);
 
-  // Refs per node for hit-testing + LIVE TEXT reads
-  const wrapperRefs = useRef(new Map()); // id -> wrapper div
-  const textRefs = useRef(new Map()); // id -> contentEditable div
+  const wrapperRefs = useRef(new Map());
+  const textRefs = useRef(new Map());
   const setWrapperRef = (id) => (el) => {
     if (el) wrapperRefs.current.set(id, el);
     else wrapperRefs.current.delete(id);
@@ -61,15 +54,181 @@ export default function NodesLayer({
     else textRefs.current.delete(id);
   };
 
-  // Marquee selection state (client coords)
-  const [dragSel, setDragSel] = useState(null); // {x0,y0,x1,y1}
+  // ===== Formatting toolbar state =====
+  const [focusedEditorId, setFocusedEditorId] = useState(null);
+  const savedRangeRef = useRef(null);
+  const [boldActive, setBoldActive] = useState(false);
+  const [italicActive, setItalicActive] = useState(false);
 
-  // Group live scale preview factor (null = none)
+  useEffect(() => {
+    if (!focusedEditorId) return;
+    const onSel = () => {
+      const el = textRefs.current.get(focusedEditorId);
+      const sel = document.getSelection?.();
+      if (!el || !sel || sel.rangeCount === 0) return;
+      if (!el.contains(sel.anchorNode)) return;
+      try {
+        savedRangeRef.current = sel.getRangeAt(0).cloneRange();
+        setBoldActive(document.queryCommandState("bold"));
+        setItalicActive(document.queryCommandState("italic"));
+      } catch {}
+    };
+    document.addEventListener("selectionchange", onSel);
+    return () => document.removeEventListener("selectionchange", onSel);
+  }, [focusedEditorId]);
+
+  const focusAndRestore = () => {
+    const el = focusedEditorId ? textRefs.current.get(focusedEditorId) : null;
+    if (!el) return false;
+    el.focus();
+    const sel = window.getSelection();
+    if (!sel) return false;
+    sel.removeAllRanges();
+    if (savedRangeRef.current) sel.addRange(savedRangeRef.current);
+    else {
+      const r = document.createRange();
+      r.selectNodeContents(el);
+      r.collapse(false);
+      sel.addRange(r);
+    }
+    return true;
+  };
+
+  const execFormat = (cmd) => {
+    if (!focusAndRestore()) return;
+    try {
+      document.execCommand(cmd, false, null);
+    } catch {}
+    setTimeout(() => {
+      try {
+        setBoldActive(document.queryCommandState("bold"));
+        setItalicActive(document.queryCommandState("italic"));
+      } catch {}
+    }, 0);
+  };
+
+  // ===== Line ↔ list helpers =====
+  const getFocusedEditor = () =>
+    focusedEditorId ? textRefs.current.get(focusedEditorId) : null;
+
+  // Parse current editor HTML into "visual lines" preserving inline markup where possible
+  const htmlToLines = (html) => {
+    const tmp = document.createElement("div");
+    tmp.innerHTML = html || "";
+    const lines = [];
+    let cur = "";
+
+    const flush = () => {
+      lines.push(cur);
+      cur = "";
+    };
+
+    tmp.childNodes.forEach((node) => {
+      if (node.nodeType === 1) {
+        const tag = node.tagName;
+        if (tag === "BR") {
+          flush();
+        } else if (tag === "DIV" || tag === "P") {
+          lines.push(node.innerHTML);
+        } else if (tag === "OL" || tag === "UL") {
+          // unwrap existing list to lines
+          node.querySelectorAll(":scope > li").forEach((li) => {
+            // For checklist, use span if present to get text+inline marks
+            const labelSpan = li.querySelector("label > span");
+            lines.push(labelSpan ? labelSpan.innerHTML : li.innerHTML);
+          });
+        } else {
+          cur += node.outerHTML;
+        }
+      } else if (node.nodeType === 3) {
+        cur += node.nodeValue;
+      }
+    });
+    if (cur.trim() !== "") flush();
+
+    // normalize empties (skip purely empty lines)
+    return lines.filter((l) => l.replace(/<br\s*\/?>/gi, "").trim() !== "");
+  };
+
+  const setEditorHTML = (el, html, alsoUpdateState = true) => {
+    if (!el) return;
+    el.innerHTML = html || "";
+    // place caret at end
+    const sel = window.getSelection();
+    if (sel) {
+      sel.removeAllRanges();
+      const r = document.createRange();
+      r.selectNodeContents(el);
+      r.collapse(false);
+      sel.addRange(r);
+    }
+    // optionally sync state so changes persist across selection changes
+    if (alsoUpdateState && focusedEditorId != null) {
+      onChange?.(focusedEditorId, html || "");
+    }
+  };
+
+  const toggleOrderedList = () => {
+    const el = getFocusedEditor();
+    if (!el) return;
+
+    // If already an ordered list at top level, unwrap back to lines
+    const first = el.firstElementChild;
+    if (first && first.tagName === "OL") {
+      const lines = Array.from(first.querySelectorAll(":scope > li")).map(
+        (li) => li.innerHTML
+      );
+      setEditorHTML(el, lines.join("<br>"));
+      return;
+    }
+
+    const lines = htmlToLines(el.innerHTML);
+    if (lines.length === 0) return;
+    const list = `<ol style="margin:0;padding-left:1.4em">${lines
+      .map((l) => `<li>${l || "<br>"}</li>`)
+      .join("")}</ol>`;
+    setEditorHTML(el, list);
+  };
+
+  const toggleChecklist = () => {
+    const el = getFocusedEditor();
+    if (!el) return;
+
+    const first = el.firstElementChild;
+    if (first && first.tagName === "UL" && first.dataset.checklist === "true") {
+      const lines = Array.from(first.querySelectorAll(":scope > li")).map(
+        (li) => {
+          const span = li.querySelector("label > span");
+          return span ? span.innerHTML : li.innerHTML;
+        }
+      );
+      setEditorHTML(el, lines.join("<br>"));
+      return;
+    }
+
+    const lines = htmlToLines(el.innerHTML);
+    if (lines.length === 0) return;
+    const list = `<ul data-checklist="true" style="list-style:none;margin:0;padding-left:0">
+      ${lines
+        .map(
+          (l) => `<li>
+            <label style="display:flex;align-items:flex-start;gap:0.4em">
+              <input type="checkbox" style="width:1em;height:1em;margin-top:0.2em" />
+              <span>${l || "<br>"}</span>
+            </label>
+          </li>`
+        )
+        .join("")}
+    </ul>`;
+    setEditorHTML(el, list);
+  };
+
+  // ===== marquee + group selection (unchanged) =====
+  const [dragSel, setDragSel] = useState(null);
   const [groupLiveFactor, setGroupLiveFactor] = useState(null);
   const groupLiveFactorRef = useRef(1);
-
-  // Compute group bounds (client rect union)
   const [groupRect, setGroupRect] = useState(null);
+
   useLayoutEffect(() => {
     if (!selectedIds?.length) {
       setGroupRect(null);
@@ -100,22 +259,16 @@ export default function NodesLayer({
     } else setGroupRect(null);
   }, [selectedIds, nodes, Z, camX, camY]);
 
-  // ----- Background / marquee selection + click-away (single & multi) -----
-  const downRef = useRef(null); // { empty: boolean, x, y }
-  const CLICK_EPS = 3; // px threshold to treat as a click
+  const downRef = useRef(null);
+  const CLICK_EPS = 3;
 
   const onRootPointerDown = (e) => {
     if (e.button !== 0) return;
-
     const hitNode = e.target.closest?.("[data-node-wrapper]");
     const hitUI = e.target.closest?.("[data-ui]");
     const emptySurface = !hitNode && !hitUI;
-
-    // record initial press for click vs drag
     downRef.current = { empty: emptySurface, x: e.clientX, y: e.clientY };
-
     if (emptySurface) {
-      // start marquee; selection will be set on pointerup
       setDragSel({
         x0: e.clientX,
         y0: e.clientY,
@@ -126,69 +279,61 @@ export default function NodesLayer({
       e.preventDefault();
     }
   };
-
   const onRootPointerMove = (e) => {
     if (!dragSel) return;
     setDragSel((s) => ({ ...s, x1: e.clientX, y1: e.clientY }));
     e.preventDefault();
   };
+  const onRootPointerUp = (e) => {
+    const down = downRef.current;
+    downRef.current = null;
 
-const onRootPointerUp = (e) => {
-  const down = downRef.current;
-  downRef.current = null;
+    if (dragSel) {
+      const xMin = Math.min(dragSel.x0, dragSel.x1);
+      const xMax = Math.max(dragSel.x0, dragSel.x1);
+      const yMin = Math.min(dragSel.y0, dragSel.y1);
+      const yMax = Math.max(dragSel.y0, dragSel.y1);
 
-  // If a marquee happened, finalize its selection and stop here
-  if (dragSel) {
-    const xMin = Math.min(dragSel.x0, dragSel.x1);
-    const xMax = Math.max(dragSel.x0, dragSel.x1);
-    const yMin = Math.min(dragSel.y0, dragSel.y1);
-    const yMax = Math.max(dragSel.y0, dragSel.y1);
+      const ids = [];
+      for (const [id, el] of wrapperRefs.current.entries()) {
+        const r = el.getBoundingClientRect();
+        const intersects =
+          r.right >= xMin &&
+          r.left <= xMax &&
+          r.bottom >= yMin &&
+          r.top <= yMax;
+        if (intersects) ids.push(id);
+      }
 
-    const ids = [];
-    for (const [id, el] of wrapperRefs.current.entries()) {
-      const r = el.getBoundingClientRect();
-      const intersects =
-        r.right >= xMin && r.left <= xMax && r.bottom >= yMin && r.top <= yMax;
-      if (intersects) ids.push(id);
-    }
+      onSetSelection?.(ids);
+      if (ids.length === 0) {
+        onBackgroundClickAway?.();
+        setFocusedEditorId(null);
+      }
 
-    onSetSelection?.(ids);
-
-    // ✅ If marquee selected nothing: treat as background click-away
-    if (ids.length === 0) {
-      onBackgroundClickAway?.(); // clear shapes + nodes + blur
-    }
-
-    setDragSel(null);
-    rootRef.current.releasePointerCapture?.(e.pointerId);
-    e.preventDefault();
-    return;
-  }
-
-  // Otherwise: a simple click that started on empty surface and didn't move
-  if (down && down.empty) {
-    const dx = Math.abs(e.clientX - down.x);
-    const dy = Math.abs(e.clientY - down.y);
-    if (dx < CLICK_EPS && dy < CLICK_EPS) {
-      onSetSelection?.([]); // clear node selection
-      onBackgroundClickAway?.(); // also clear shape selection + blur
+      setDragSel(null);
+      rootRef.current.releasePointerCapture?.(e.pointerId);
       e.preventDefault();
+      return;
     }
-  }
-};
 
+    if (down && down.empty) {
+      const dx = Math.abs(e.clientX - down.x);
+      const dy = Math.abs(e.clientY - down.y);
+      if (dx < CLICK_EPS && dy < CLICK_EPS) {
+        onSetSelection?.([]);
+        onBackgroundClickAway?.();
+        setFocusedEditorId(null);
+        e.preventDefault();
+      }
+    }
+  };
 
-  // ----- Group resize with global listeners (only while pressed) -----
-  const groupStart = useRef({ x: 0, y: 0 });
+  // group resize (unchanged)
   const groupMoveUpCleanup = useRef(null);
-
   const onGroupHandleDown = (e) => {
     if (e.button !== 0 || !groupRect) return;
-
     const start = { x: e.clientX, y: e.clientY };
-    groupStart.current = start;
-
-    // start preview
     groupLiveFactorRef.current = 1;
     setGroupLiveFactor(1);
 
@@ -196,24 +341,19 @@ const onRootPointerUp = (e) => {
       const dx = ev.clientX - start.x;
       const dy = ev.clientY - start.y;
       const delta = (dx + dy) / 2;
-
       const rate = ev.shiftKey
         ? PX_PER_DOUBLE_SHIFT
         : ev.altKey
         ? PX_PER_DOUBLE_ALT
         : PX_PER_DOUBLE_BASE;
-
       const f = Math.exp((Math.LN2 / rate) * delta);
-      // clamp & store in ref, also update preview state
       groupLiveFactorRef.current = Math.max(0.05, Math.min(20, f));
       setGroupLiveFactor(groupLiveFactorRef.current);
     };
-
     const onUp = () => {
       const f = groupLiveFactorRef.current;
       setGroupLiveFactor(null);
       onGroupScaleCommit?.(f);
-
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp, true);
       groupMoveUpCleanup.current = null;
@@ -230,40 +370,30 @@ const onRootPointerUp = (e) => {
     e.stopPropagation();
   };
 
-  // clean up on unmount just in case
-  useEffect(
-    () => () => {
-      groupMoveUpCleanup.current?.();
-    },
-    []
-  );
+  useEffect(() => () => groupMoveUpCleanup.current?.(), []);
 
-  // ----- Toolbar actions (Delete / Combine with LIVE text) -----
+  // toolbar actions (group) unchanged
   const normalizeText = (t) =>
     t
       .replace(/\r\n/g, "\n")
       .replace(/\n{3,}/g, "\n\n")
       .replace(/\n$/, "");
-
   const onDeleteSelectedClick = (e) => {
     e.preventDefault();
     e.stopPropagation();
     onDeleteSelected?.();
   };
-
   const onCombineSelectedClick = (e) => {
     e.preventDefault();
     e.stopPropagation();
     if (!selectedIds || selectedIds.length < 2) return;
 
-    // Sort by world Y then X (top→bottom, then left→right)
     const byId = new Map(nodes.map((n) => [n.id, n]));
     const selectedNodes = selectedIds
       .map((id) => byId.get(id))
       .filter(Boolean)
       .sort((a, b) => a.y - b.y || a.x - b.x);
 
-    // Pull LIVE text from DOM if available (captures unsaved edits)
     const parts = selectedNodes.map((n) => {
       const el = textRefs.current.get(n.id);
       const live = el?.innerText;
@@ -289,6 +419,17 @@ const onRootPointerUp = (e) => {
       avgScale,
     });
   };
+
+  const formatBtnStyle = (active) => ({
+    padding: "6px 10px",
+    borderRadius: 8,
+    border: "1px solid #e5e7eb",
+    background: active ? "#eef2ff" : "#fff",
+    cursor: "pointer",
+    fontSize: 12,
+    lineHeight: 1,
+    userSelect: "none",
+  });
 
   return (
     <div
@@ -318,12 +459,18 @@ const onRootPointerUp = (e) => {
           onDragSelectedByScreen={onDragSelectedByScreen}
           onScaleNode={(newScale) => onScaleNode?.(n.id, newScale)}
           onDelete={() => onDeleteNode?.(n.id)}
-          onChange={(text) => onChange?.(n.id, text)}
+          onChange={(html) => onChange?.(n.id, html)}
           groupLiveFactor={groupLiveFactor}
+          onEditorFocus={() => setFocusedEditorId(n.id)}
+          onEditorBlur={() => {
+            setTimeout(() => {
+              setFocusedEditorId((cur) => (cur === n.id ? null : cur));
+            }, 0);
+          }}
         />
       ))}
 
-      {/* Marquee rectangle */}
+      {/* marquee */}
       {dragSel && (
         <div
           data-ui
@@ -341,7 +488,7 @@ const onRootPointerUp = (e) => {
         />
       )}
 
-      {/* Group toolbar + resize handle */}
+      {/* group toolbar + handle */}
       {groupRect && selectedIds.length > 1 && (
         <>
           <div
@@ -412,6 +559,86 @@ const onRootPointerUp = (e) => {
           />
         </>
       )}
+
+      {/* ===== Bottom formatting toolbar ===== */}
+      {focusedEditorId != null && (
+        <div
+          data-ui
+          onMouseDown={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
+          style={{
+            position: "absolute",
+            left: "50%",
+            bottom: 12,
+            transform: "translateX(-50%)",
+            display: "inline-flex",
+            gap: 8,
+            padding: "6px 8px",
+            background: "#fff",
+            border: "1px solid #e5e7eb",
+            borderRadius: 10,
+            boxShadow: "0 8px 24px rgba(0,0,0,0.10)",
+            zIndex: 20,
+          }}
+        >
+          <button
+            type="button"
+            data-ui
+            title="Bold (Ctrl/Cmd+B)"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              execFormat("bold");
+            }}
+            style={formatBtnStyle(boldActive)}
+          >
+            <span style={{ fontWeight: 700 }}>B</span>
+          </button>
+          <button
+            type="button"
+            data-ui
+            title="Italic (Ctrl/Cmd+I)"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              execFormat("italic");
+            }}
+            style={formatBtnStyle(italicActive)}
+          >
+            <span style={{ fontStyle: "italic" }}>I</span>
+          </button>
+          {/* NEW: Ordered list */}
+          <button
+            type="button"
+            data-ui
+            title="Toggle ordered list"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              toggleOrderedList();
+            }}
+            style={formatBtnStyle(false)}
+          >
+            1.
+          </button>
+          {/* NEW: Checklist */}
+          <button
+            type="button"
+            data-ui
+            title="Toggle checklist"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              toggleChecklist();
+            }}
+            style={formatBtnStyle(false)}
+          >
+            ☐
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -433,15 +660,15 @@ function NodeItem({
   onDelete,
   onChange,
   groupLiveFactor,
+  onEditorFocus,
+  onEditorBlur,
 }) {
   const wrapperRef = useRef(null);
   const textRef = useRef(null);
 
-  // mode: 'none' | 'drag' | 'resize' (single-node)
   const modeRef = useRef("none");
   const lastClient = useRef({ x: 0, y: 0 });
 
-  // single resize state managed with global listeners
   const startClient = useRef({ x: 0, y: 0 });
   const startScale = useRef(node.scale ?? 1);
   const lastScaleRef = useRef(node.scale ?? 1);
@@ -453,10 +680,8 @@ function NodeItem({
     selected && groupLiveFactor != null
       ? selfScale * groupLiveFactor
       : selfScale;
-
   const fontPx = basePx * Z * effectiveScale;
 
-  // world → screen
   const leftScr = node.x * Z + camX;
   const topScr = node.y * Z + camY;
 
@@ -465,7 +690,15 @@ function NodeItem({
     if (textRef.current) setTextRef(textRef.current);
   }, [setWrapperRef, setTextRef]);
 
-  // autofocus newly created node
+  // Uncontrolled: only set HTML when prop changes and not focused
+  useEffect(() => {
+    const el = textRef.current;
+    if (!el) return;
+    if (document.activeElement !== el) {
+      el.innerHTML = node.text || "";
+    }
+  }, [node.text]);
+
   useEffect(() => {
     if (autoFocus && textRef.current) {
       const el = textRef.current;
@@ -494,10 +727,8 @@ function NodeItem({
     return inside && nearEdge;
   };
 
-  // Click to select / toggle
   const onWrapperClick = (e) => onClickSelect?.(e);
 
-  // Drag ring: move whole selection
   const onWrapperPointerDown = (e) => {
     if (e.button !== 0) return;
     if (selected && isOnRing(e) && !e.shiftKey) {
@@ -528,7 +759,6 @@ function NodeItem({
     }
   };
 
-  // Single-node resize: ONLY while handle held (global listeners)
   const onSingleHandleDown = (e) => {
     if (e.button !== 0) return;
     if (!selected || multiSelected) return;
@@ -542,24 +772,19 @@ function NodeItem({
       const dx = ev.clientX - startClient.current.x;
       const dy = ev.clientY - startClient.current.y;
       const delta = (dx + dy) / 2;
-
       const rate = ev.shiftKey
         ? PX_PER_DOUBLE_SHIFT
         : ev.altKey
         ? PX_PER_DOUBLE_ALT
         : PX_PER_DOUBLE_BASE;
-
       const factor = Math.exp((Math.LN2 / rate) * delta);
       const newScale = clampScale(startScale.current * factor);
-
-      lastScaleRef.current = newScale; // remember latest
-      onScaleNode?.(newScale); // live preview while pressed
+      lastScaleRef.current = newScale;
+      onScaleNode?.(newScale);
     };
     const onUp = () => {
       modeRef.current = "none";
-      // commit again to be absolutely sure the last value sticks
       onScaleNode?.(lastScaleRef.current);
-
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp, true);
       singleMoveUpCleanup.current = null;
@@ -575,14 +800,8 @@ function NodeItem({
     e.preventDefault();
     e.stopPropagation();
   };
-  useEffect(
-    () => () => {
-      singleMoveUpCleanup.current?.();
-    },
-    []
-  );
+  useEffect(() => () => singleMoveUpCleanup.current?.(), []);
 
-  // Delete (red dot)
   const onDeletePointerDown = (e) => {
     if (e.button !== 0) return;
     e.preventDefault();
@@ -594,16 +813,15 @@ function NodeItem({
     <div
       ref={wrapperRef}
       data-node-wrapper
-      data-id={node.id} // 👈 needed so ShapesLayer can read the id
+      data-id={node.id}
       style={{
         zIndex: 10,
         position: "absolute",
         left: leftScr,
         top: topScr,
-        display: "inline-block", // 👈 ensure BCR hugs the text size
+        display: "inline-block",
         boxShadow: selected ? `0 0 0 ${RING_WIDTH}px ${BLUE}` : "none",
         cursor: selected ? "move" : "text",
-        pointerEvents: "auto",
       }}
       onClick={onWrapperClick}
       onPointerDown={onWrapperPointerDown}
@@ -615,11 +833,11 @@ function NodeItem({
         ref={textRef}
         contentEditable
         suppressContentEditableWarning
+        onFocus={() => onEditorFocus?.()}
         onBlur={(e) => {
-          let txt = e.currentTarget.innerText.replace(/\r\n/g, "\n");
-          txt = txt.replace(/\n{3,}/g, "\n\n");
-          txt = txt.replace(/\n$/, "");
-          onChange?.(txt);
+          const html = e.currentTarget.innerHTML;
+          onChange?.(html);
+          onEditorBlur?.();
         }}
         onPaste={(e) => {
           e.preventDefault();
@@ -635,20 +853,18 @@ function NodeItem({
         style={{
           fontSize: `${fontPx}px`,
           lineHeight: 1.2,
-          whiteSpace: "pre-wrap",
-          wordBreak: "break-word",
           textRendering: "optimizeLegibility",
           WebkitFontSmoothing: "antialiased",
           MozOsxFontSmoothing: "grayscale",
           padding: "2px 4px",
           background: "transparent",
           userSelect: "text",
+          whiteSpace: "normal",
+          wordBreak: "break-word",
+          minWidth: 1,
+          minHeight: 1,
         }}
-      >
-        {node.text}
-      </div>
-
-      {/* Single-node controls (only in single selection) */}
+      />
       {selected && !multiSelected && (
         <>
           <div

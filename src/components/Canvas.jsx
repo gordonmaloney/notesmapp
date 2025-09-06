@@ -38,6 +38,23 @@ export default function Canvas() {
   const [editingViewId, setEditingViewId] = useState(null);
   const [editingName, setEditingName] = useState("");
 
+  // put these near your other frame helpers
+  const updateViewCamera = (id) => {
+    // snapshot the *current* normalized camera
+    const { camera: norm } = normalizeZoomPure(cameraRef.current);
+    setViews((vs) =>
+      vs.map((v) => (v.id === id ? { ...v, camera: { ...norm } } : v))
+    );
+  };
+
+  const deleteView = (id) => {
+    setViews((vs) => vs.filter((v) => v.id !== id));
+    if (editingViewId === id) {
+      setEditingViewId(null);
+      setEditingName("");
+    }
+  };
+
   const containerRef = useRef(null);
 
   // Panning state
@@ -493,29 +510,79 @@ export default function Canvas() {
           {views
             .filter((v) => v.id !== "home")
             .map((v) => (
-              <div key={v.id} style={{ display: "inline-flex" }}>
+              <div
+                key={v.id}
+                style={{ display: "inline-flex", flexDirection: "column" }}
+              >
                 {editingViewId === v.id ? (
-                  <input
-                    autoFocus
-                    value={editingName}
-                    onChange={(e) => setEditingName(e.target.value)}
-                    onBlur={commitRenameView}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        commitRenameView();
-                      } else if (e.key === "Escape") {
-                        e.preventDefault();
-                        setEditingViewId(null);
-                        setEditingName("");
-                      }
-                    }}
-                    style={{
-                      ...chipStyle("#fff"),
-                      padding: "5px 8px",
-                      width: Math.max(80, editingName.length * 8 + 24),
-                    }}
-                  />
+                  <>
+                    <input
+                      autoFocus
+                      value={editingName}
+                      onChange={(e) => setEditingName(e.target.value)}
+                      onBlur={() => {
+                        setTimeout(() => commitRenameView(), 0);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          commitRenameView();
+                        } else if (e.key === "Escape") {
+                          e.preventDefault();
+                          setEditingViewId(null);
+                          setEditingName("");
+                        }
+                      }}
+                      onDoubleClick={(e) => e.stopPropagation()}
+                      onPointerDown={(e) => e.stopPropagation()}
+                      style={{
+                        ...chipStyle("#fff"),
+                        padding: "5px 8px",
+                        width: Math.max(80, editingName.length * 8 + 24),
+                      }}
+                    />
+                    {/* Actions under the input */}
+                    <div style={{ display: "block" }}>
+                      <div
+                        data-ui
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onDoubleClick={(e) => e.stopPropagation()}
+                        style={{
+                          display: "flex",
+                          gap: 6,
+                          marginTop: 4,
+                          alignItems: "center",
+                          justifyContent: "flex-start",
+                        }}
+                      >
+                        <button
+                          title="Update this view to the current pan/zoom"
+                          onPointerDown={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            updateViewCamera(v.id); // keeps rename mode open
+                          }}
+                          style={chipStyle("#eef2ff")}
+                        >
+                          Update to current
+                        </button>
+                        <button
+                          title="Delete this view"
+                          onPointerDown={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            deleteView(v.id); // keeps rename mode open
+                          }}
+                          style={{
+                            ...chipStyle("#fee2e2"),
+                            borderColor: "#fecaca",
+                          }}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  </>
                 ) : (
                   <button
                     onClick={(e) => {
@@ -534,15 +601,16 @@ export default function Canvas() {
                 )}
               </div>
             ))}
-          {/* Save view */}
-          <button
-            title="Save current view"
-            onClick={saveCurrentView}
-            style={chipStyle("#eef2ff")}
-          >
-            + Save view
-          </button>
         </div>
+
+        {/* Save view */}
+        <button
+          title="Save current view"
+          onClick={saveCurrentView}
+          style={chipStyle("#eef2ff")}
+        >
+          + Save view
+        </button>
       </div>
 
       {/* Right-side draw toolbar */}
