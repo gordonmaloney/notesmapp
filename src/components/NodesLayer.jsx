@@ -39,6 +39,9 @@ export default function NodesLayer({
   onScaleNode, // (id, newScale) — live while dragging handle
   onDeleteNode, // (id)
 
+
+  onBackgroundClickAway,
+
   // focus + text update
   focusId,
   onChange, // (id, text)
@@ -130,64 +133,50 @@ export default function NodesLayer({
     e.preventDefault();
   };
 
-  const onRootPointerUp = (e) => {
-    const down = downRef.current;
-    downRef.current = null;
+const onRootPointerUp = (e) => {
+  const down = downRef.current;
+  downRef.current = null;
 
-    // If a marquee happened, finalize its selection and stop here
-    if (dragSel) {
-      const xMin = Math.min(dragSel.x0, dragSel.x1);
-      const xMax = Math.max(dragSel.x0, dragSel.x1);
-      const yMin = Math.min(dragSel.y0, dragSel.y1);
-      const yMax = Math.max(dragSel.y0, dragSel.y1);
+  // If a marquee happened, finalize its selection and stop here
+  if (dragSel) {
+    const xMin = Math.min(dragSel.x0, dragSel.x1);
+    const xMax = Math.max(dragSel.x0, dragSel.x1);
+    const yMin = Math.min(dragSel.y0, dragSel.y1);
+    const yMax = Math.max(dragSel.y0, dragSel.y1);
 
-      const ids = [];
-      for (const [id, el] of wrapperRefs.current.entries()) {
-        const r = el.getBoundingClientRect();
-        const intersects =
-          r.right >= xMin &&
-          r.left <= xMax &&
-          r.bottom >= yMin &&
-          r.top <= yMax;
-        if (intersects) ids.push(id);
-      }
+    const ids = [];
+    for (const [id, el] of wrapperRefs.current.entries()) {
+      const r = el.getBoundingClientRect();
+      const intersects =
+        r.right >= xMin && r.left <= xMax && r.bottom >= yMin && r.top <= yMax;
+      if (intersects) ids.push(id);
+    }
 
-      onSetSelection?.(ids);
+    onSetSelection?.(ids);
 
-      // If the marquee selected nothing (i.e., click-away), also blur the editor
-      if (ids.length === 0) {
-        const ae = document.activeElement;
-        if (
-          ae &&
-          (ae.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName))
-        ) {
-          ae.blur();
-        }
-      }
+    // ✅ If marquee selected nothing: treat as background click-away
+    if (ids.length === 0) {
+      onBackgroundClickAway?.(); // clear shapes + nodes + blur
+    }
 
-      setDragSel(null);
-      rootRef.current.releasePointerCapture?.(e.pointerId);
+    setDragSel(null);
+    rootRef.current.releasePointerCapture?.(e.pointerId);
+    e.preventDefault();
+    return;
+  }
+
+  // Otherwise: a simple click that started on empty surface and didn't move
+  if (down && down.empty) {
+    const dx = Math.abs(e.clientX - down.x);
+    const dy = Math.abs(e.clientY - down.y);
+    if (dx < CLICK_EPS && dy < CLICK_EPS) {
+      onSetSelection?.([]); // clear node selection
+      onBackgroundClickAway?.(); // also clear shape selection + blur
       e.preventDefault();
-      return;
     }
+  }
+};
 
-    // Otherwise treat as a click: if it began on empty space and didn't move -> clear selection + blur
-    if (down && down.empty) {
-      const dx = Math.abs(e.clientX - down.x);
-      const dy = Math.abs(e.clientY - down.y);
-      if (dx < CLICK_EPS && dy < CLICK_EPS) {
-        onSetSelection?.([]);
-        const ae = document.activeElement;
-        if (
-          ae &&
-          (ae.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName))
-        ) {
-          ae.blur();
-        }
-        e.preventDefault();
-      }
-    }
-  };
 
   // ----- Group resize with global listeners (only while pressed) -----
   const groupStart = useRef({ x: 0, y: 0 });
@@ -605,12 +594,16 @@ function NodeItem({
     <div
       ref={wrapperRef}
       data-node-wrapper
+      data-id={node.id} // 👈 needed so ShapesLayer can read the id
       style={{
+        zIndex: 10,
         position: "absolute",
         left: leftScr,
         top: topScr,
+        display: "inline-block", // 👈 ensure BCR hugs the text size
         boxShadow: selected ? `0 0 0 ${RING_WIDTH}px ${BLUE}` : "none",
         cursor: selected ? "move" : "text",
+        pointerEvents: "auto",
       }}
       onClick={onWrapperClick}
       onPointerDown={onWrapperPointerDown}
