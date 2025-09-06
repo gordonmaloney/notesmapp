@@ -4,9 +4,8 @@ import { useRef, useState, useEffect } from "react";
 const BLUE = "#3b82f6";
 const RING = 2;
 const HANDLE = 10;
-const HANDLE_HIT = 20;
+const EDGE_HIT = 14; // how close to the outline counts as a hit (screen px)
 const DELETE_R = 6;
-const STROKEWIDTH = 2;
 
 export default function ShapesLayer({
   shapes,
@@ -18,11 +17,11 @@ export default function ShapesLayer({
   onResize, // (id, patchGeom in WORLD units)
   onDelete, // (id)
   onBackgroundClickAway, // () => void
-  onSetNodeSelection, // (ids: number[])  ⬅️ NEW: select nodes from here
+  onSetNodeSelection, // (ids: number[])
 }) {
   const svgRef = useRef(null);
 
-  // -------- helpers --------
+  // screen → world
   const screenToWorldPt = (clientX, clientY) => {
     const rect = svgRef.current.getBoundingClientRect();
     const sx = clientX - rect.left;
@@ -30,7 +29,7 @@ export default function ShapesLayer({
     return { wx: (sx - camera.x) / Z, wy: (sy - camera.y) / Z };
   };
 
-  // -------- shape drag/resize state --------
+  // shape drag/resize state
   const startRef = useRef(null); // { id, mode:'drag'|'resize', which:'a'|'b'|null, last:{x,y} }
 
   const startDrag = (e, shape, mode, which = null) => {
@@ -60,7 +59,6 @@ export default function ShapesLayer({
       return;
     }
 
-    // resize → pointer in world coords
     const { wx, wy } = screenToWorldPt(ev.clientX, ev.clientY);
     const sh = shapes.find((p) => p.id === s.id);
     if (!sh) return;
@@ -96,17 +94,15 @@ export default function ShapesLayer({
     onDelete?.(id);
   };
 
-  // -------- EMPTY-SPACE MARQUEE (screen coords) --------
+  // -------- empty-space marquee (screen coords) --------
   const CLICK_EPS = 3;
-  const [marquee, setMarquee] = useState(null); // {x0,y0,x1,y1} in screen px
+  const [marquee, setMarquee] = useState(null); // {x0,y0,x1,y1}
   const bgDownRef = useRef(null);
   const capturingRef = useRef(false);
 
   const onSvgPointerDown = (e) => {
     if (e.button !== 0) return;
-
-    // only when clicking the bare SVG (not a shape child)
-    if (e.target !== svgRef.current) return;
+    if (e.target !== svgRef.current) return; // only blank SVG, not shape edges/handles
 
     const rect = svgRef.current.getBoundingClientRect();
     const x = e.clientX - rect.left;
@@ -115,13 +111,9 @@ export default function ShapesLayer({
     bgDownRef.current = { sx: e.clientX, sy: e.clientY, x0: x, y0: y };
     setMarquee({ x0: x, y0: y, x1: x, y1: y });
 
-    // capture moves/up so drag continues outside svg
     svgRef.current.setPointerCapture?.(e.pointerId);
     capturingRef.current = true;
-
     e.preventDefault();
-    // important: do NOT stopPropagation here — let Canvas panning logic
-    // still see events if it wants to (it checks for Space/Shift etc.)
   };
 
   const onSvgPointerMove = (e) => {
@@ -135,7 +127,6 @@ export default function ShapesLayer({
   const onSvgPointerUp = (e) => {
     if (!bgDownRef.current) return;
 
-    // release capture
     svgRef.current.releasePointerCapture?.(e.pointerId);
     capturingRef.current = false;
 
@@ -149,21 +140,17 @@ export default function ShapesLayer({
     const dx = Math.abs(e.clientX - sx);
     const dy = Math.abs(e.clientY - sy);
 
-    // finalize marquee selection of NODES (not shapes)
     if (dx < CLICK_EPS && dy < CLICK_EPS) {
-      // simple click-away
       onBackgroundClickAway?.();
       setMarquee(null);
       return;
     }
 
-    // build screen-rect bounds
     const xMin = Math.min(x0, x1);
     const xMax = Math.max(x0, x1);
     const yMin = Math.min(y0, y1);
     const yMax = Math.max(y0, y1);
 
-    // hit-test node wrappers by DOM (they have data-node-wrapper)
     const ids = [];
     const wrappers = document.querySelectorAll("[data-node-wrapper][data-id]");
     wrappers.forEach((el) => {
@@ -180,23 +167,18 @@ export default function ShapesLayer({
       }
     });
 
-    if (ids.length > 0) {
-      onSetNodeSelection?.(ids);
-    } else {
-      onBackgroundClickAway?.();
-    }
+    if (ids.length > 0) onSetNodeSelection?.(ids);
+    else onBackgroundClickAway?.();
 
     setMarquee(null);
   };
 
-  // Safety: clear marquee if window loses pointer capture (ESC, etc.)
   useEffect(() => {
     const onCancel = () => setMarquee(null);
     window.addEventListener("blur", onCancel);
     return () => window.removeEventListener("blur", onCancel);
   }, []);
 
-  // -------- render --------
   return (
     <svg
       ref={svgRef}
@@ -225,20 +207,21 @@ export default function ShapesLayer({
               h = s.h ?? 0;
             return (
               <g key={s.id}>
-                {/* drag hit area */}
+                {/* ✅ edge-only hit: transparent stroke, no fill */}
                 <rect
                   x={x}
                   y={y}
                   width={w}
                   height={h}
-                  fill="transparent"
+                  fill="none"
                   stroke="transparent"
-                  strokeWidth={HANDLE_HIT}
+                  strokeWidth={EDGE_HIT}
                   vectorEffect="non-scaling-stroke"
+                  pointerEvents="stroke"
                   onPointerDown={(e) => startDrag(e, s, "drag")}
                   style={{ cursor: selected ? "move" : "pointer" }}
                 />
-                {/* visible */}
+                {/* visible shape (non-interactive) */}
                 <rect
                   x={x}
                   y={y}
@@ -246,7 +229,7 @@ export default function ShapesLayer({
                   height={h}
                   fill="none"
                   stroke="#111"
-                  strokeWidth={STROKEWIDTH}
+                  strokeWidth={1}
                   vectorEffect="non-scaling-stroke"
                   pointerEvents="none"
                 />
@@ -302,24 +285,27 @@ export default function ShapesLayer({
             const { cx, cy, r = 0 } = s;
             return (
               <g key={s.id}>
+                {/* ✅ edge-only hit */}
                 <circle
                   cx={cx}
                   cy={cy}
                   r={Math.max(r, 0.5)}
                   fill="none"
                   stroke="transparent"
-                  strokeWidth={HANDLE_HIT}
+                  strokeWidth={EDGE_HIT}
                   vectorEffect="non-scaling-stroke"
+                  pointerEvents="stroke"
                   onPointerDown={(e) => startDrag(e, s, "drag")}
                   style={{ cursor: selected ? "move" : "pointer" }}
                 />
+                {/* visible */}
                 <circle
                   cx={cx}
                   cy={cy}
                   r={r}
                   fill="none"
                   stroke="#111"
-                  strokeWidth={STROKEWIDTH}
+                  strokeWidth={1}
                   vectorEffect="non-scaling-stroke"
                   pointerEvents="none"
                 />
@@ -376,24 +362,27 @@ export default function ShapesLayer({
               my = (y1 + y2) / 2;
             return (
               <g key={s.id}>
+                {/* ✅ fat stroke-only hit */}
                 <line
                   x1={x1}
                   y1={y1}
                   x2={x2}
                   y2={y2}
                   stroke="transparent"
-                  strokeWidth={HANDLE_HIT}
+                  strokeWidth={EDGE_HIT}
                   vectorEffect="non-scaling-stroke"
+                  pointerEvents="stroke"
                   onPointerDown={(e) => startDrag(e, s, "drag")}
                   style={{ cursor: selected ? "move" : "pointer" }}
                 />
+                {/* visible */}
                 <line
                   x1={x1}
                   y1={y1}
                   x2={x2}
                   y2={y2}
                   stroke="#111"
-                  strokeWidth={STROKEWIDTH}
+                  strokeWidth={1}
                   vectorEffect="non-scaling-stroke"
                   pointerEvents="none"
                 />
@@ -462,7 +451,7 @@ export default function ShapesLayer({
         })}
       </g>
 
-      {/* Screen-space marquee overlay */}
+      {/* screen-space marquee */}
       {marquee && (
         <rect
           x={Math.min(marquee.x0, marquee.x1)}
