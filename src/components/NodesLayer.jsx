@@ -37,6 +37,8 @@ export default function NodesLayer({
 
   onBackgroundClickAway,
 
+  onAddTaskNode,
+  doneNodeIds,
   focusId,
   onChange, // (id, html)
 }) {
@@ -480,6 +482,8 @@ export default function NodesLayer({
               setFocusedEditorId((cur) => (cur === n.id ? null : cur));
             }, 0);
           }}
+          onAddTask={() => onAddTaskNode?.(n.id)}
+          isDone={doneNodeIds?.has(n.id)}
         />
       ))}
 
@@ -675,6 +679,8 @@ function NodeItem({
   groupLiveFactor,
   onEditorFocus,
   onEditorBlur,
+  onAddTask,
+  isDone
 }) {
   const wrapperRef = useRef(null);
   const textRef = useRef(null);
@@ -876,6 +882,7 @@ function NodeItem({
           wordBreak: "break-word",
           minWidth: 1,
           minHeight: 1,
+          background: isDone ? "#dcfce7" : "transparent", // ← pale green for done
         }}
       />
       {selected && !multiSelected && (
@@ -891,6 +898,29 @@ function NodeItem({
               width: DELETE_SIZE,
               height: DELETE_SIZE,
               background: "#ef4444",
+              border: "2px solid #fff",
+              borderRadius: "9999px",
+              boxShadow: "0 1px 2px rgba(0,0,0,0.15)",
+              cursor: "pointer",
+            }}
+          />
+
+          <div
+            data-ui
+            onPointerDown={(e) => {
+              if (e.button !== 0) return;
+              e.preventDefault();
+              e.stopPropagation();
+              onAddTask?.();
+            }}
+            title="Add to Tasks"
+            style={{
+              position: "absolute",
+              right: -(12 + 6), // size + offset
+              top: -(12 + 6),
+              width: 12,
+              height: 12,
+              background: "#3b82f6",
               border: "2px solid #fff",
               borderRadius: "9999px",
               boxShadow: "0 1px 2px rgba(0,0,0,0.15)",
