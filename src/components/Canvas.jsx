@@ -231,6 +231,14 @@ export default function Canvas() {
 
   // Double-click to add node (under cursor, with per-node scale)
   const handleDoubleClick = (e) => {
+    // Ignore double-clicks that originate from UI (toolbars, inputs) or the shapes layer
+    if (
+      e.target?.isContentEditable ||
+      e.target?.closest?.("[data-ui]") ||
+      e.target?.closest?.("[data-shapes-layer]")
+    ) {
+      return;
+    }
     const rect = containerRef.current.getBoundingClientRect();
     const screen = { x: e.clientX - rect.left, y: e.clientY - rect.top };
     const world = screenToWorld(screen, cameraRef.current);
@@ -445,6 +453,7 @@ export default function Canvas() {
       <div
         data-ui
         onPointerDown={(e) => e.stopPropagation()}
+        onDoubleClick={(e) => e.stopPropagation()}
         style={{
           position: "absolute",
           top: 10,
@@ -452,8 +461,9 @@ export default function Canvas() {
           right: 12,
           display: "flex",
           alignItems: "center",
+          justifyContent: "center",
           gap: 8,
-          zIndex: 1000,
+          zIndex: 1200,
           pointerEvents: "auto",
           flexWrap: "wrap",
         }}
@@ -461,21 +471,14 @@ export default function Canvas() {
         {/* Home chip */}
         <button
           title="Go Home (reset)"
-          onClick={() =>
-            jumpToView({ x: 0, y: 0, zoomBase: 1, zoomExp: 0 }, true)
-          }
+          onClick={(e) => {
+            e.stopPropagation();
+
+            jumpToView({ x: 0, y: 0, zoomBase: 1, zoomExp: 0 }, true);
+          }}
           style={chipStyle()}
         >
           Home
-        </button>
-
-        {/* Save view */}
-        <button
-          title="Save current view"
-          onClick={saveCurrentView}
-          style={chipStyle("#eef2ff")}
-        >
-          + Save view
         </button>
 
         {/* Saved views */}
@@ -515,8 +518,14 @@ export default function Canvas() {
                   />
                 ) : (
                   <button
-                    onClick={() => jumpToView(v.camera, true)}
-                    onDoubleClick={() => startRenameView(v)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      jumpToView(v.camera, true);
+                    }}
+                    onDoubleClick={(e) => {
+                      e.stopPropagation();
+                      startRenameView(v);
+                    }}
                     title={`Go to ${v.name} (double-click to rename)`}
                     style={chipStyle()}
                   >
@@ -525,6 +534,14 @@ export default function Canvas() {
                 )}
               </div>
             ))}
+          {/* Save view */}
+          <button
+            title="Save current view"
+            onClick={saveCurrentView}
+            style={chipStyle("#eef2ff")}
+          >
+            + Save view
+          </button>
         </div>
       </div>
 
