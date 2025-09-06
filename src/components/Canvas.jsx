@@ -552,17 +552,16 @@ export default function Canvas() {
   return (
     <div
       ref={containerRef}
-      style={{
-        width: "100vw",
-        height: "100vh",
-        position: "relative",
-        overflow: "hidden",
-        background: "#fff",
-        userSelect: "none",
-        touchAction: "none",
-        overscrollBehavior: "none",
-        cursor: isPanning.current ? "grabbing" : "default",
-      }}
+     style={{
+   position: "fixed",
+   inset: 0,                 // top:0; right:0; bottom:0; left:0
+   overflow: "hidden",
+   background: "#fff",
+   userSelect: "none",
+   touchAction: "none",
+   overscrollBehavior: "none",
+   cursor: isPanning.current ? "grabbing" : "default",
+ }}
       onDoubleClick={handleDoubleClick}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}

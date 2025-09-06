@@ -1,0 +1,14 @@
+/* src/index.css */
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;           /* prevent page scrollbars */
+}
+
+* { box-sizing: border-box; }
+
+body {
+  background: #fff;
+  overscroll-behavior: none;  /* no scroll chaining/bounce */
+}
