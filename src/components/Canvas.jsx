@@ -16,6 +16,88 @@ const SNAP_PX = 0.5;
 const BASE_FONT_PX = 14;
 const NEW_NODE_FONT_PX = 18;
 
+// ─── Persistence ────────────────────────────────────────────────────────────
+const STORAGE_KEY = "infcanvas.v1";
+
+function loadPersisted() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+
+    // basic validation/sanitization
+    const coerceNum = (n, d = 0) =>
+      typeof n === "number" && isFinite(n) ? n : d;
+
+    // camera
+    let cam =
+      data.camera && typeof data.camera === "object" ? data.camera : null;
+    if (cam) {
+      cam = {
+        x: coerceNum(cam.x, 0),
+        y: coerceNum(cam.y, 0),
+        zoomBase: coerceNum(cam.zoomBase, 1),
+        zoomExp: Math.trunc(coerceNum(cam.zoomExp, 0)),
+      };
+      const { camera: norm } = normalizeZoomPure(cam);
+      cam = norm;
+    }
+
+    // nodes
+    const nodes = Array.isArray(data.nodes)
+      ? data.nodes.map((n) => ({
+          id: n.id ?? Date.now() + Math.random(),
+          x: coerceNum(n.x, 0),
+          y: coerceNum(n.y, 0),
+          text: typeof n.text === "string" ? n.text : "",
+          scale: (() => {
+            const s = coerceNum(n.scale, 1);
+            return Math.min(20, Math.max(0.05, s));
+          })(),
+        }))
+      : [];
+
+    // shapes
+    const shapes = Array.isArray(data.shapes)
+      ? data.shapes.filter(
+          (s) =>
+            s &&
+            typeof s === "object" &&
+            (s.type === "line" || s.type === "rect" || s.type === "circle")
+        )
+      : [];
+
+    // views
+    const views = Array.isArray(data.views)
+      ? data.views.map((v) => ({
+          id: v.id ?? Date.now() + Math.random(),
+          name: typeof v.name === "string" ? v.name : "View",
+          camera: v.camera
+            ? normalizeZoomPure({
+                x: coerceNum(v.camera.x, 0),
+                y: coerceNum(v.camera.y, 0),
+                zoomBase: coerceNum(v.camera.zoomBase, 1),
+                zoomExp: Math.trunc(coerceNum(v.camera.zoomExp, 0)),
+              }).camera
+            : { x: 0, y: 0, zoomBase: 1, zoomExp: 0 },
+        }))
+      : null;
+
+    return { camera: cam, nodes, shapes, views };
+  } catch {
+    return null;
+  }
+}
+
+function savePersisted(payload) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+  } catch {
+    // ignore quota / private mode errors
+  }
+}
+// ───────────────────────────────────────────────────────────────────────────
+
 export default function Canvas() {
   const { camera, setCamera } = useCamera();
   const [nodes, setNodes] = useState([]);
@@ -38,22 +120,36 @@ export default function Canvas() {
   const [editingViewId, setEditingViewId] = useState(null);
   const [editingName, setEditingName] = useState("");
 
-  // put these near your other frame helpers
-  const updateViewCamera = (id) => {
-    // snapshot the *current* normalized camera
-    const { camera: norm } = normalizeZoomPure(cameraRef.current);
-    setViews((vs) =>
-      vs.map((v) => (v.id === id ? { ...v, camera: { ...norm } } : v))
-    );
-  };
+  // persistence: load once on mount
+  useEffect(() => {
+    const data = loadPersisted();
+    if (!data) return;
+    if (data.nodes) setNodes(data.nodes);
+    if (data.shapes) setShapes(data.shapes);
+    if (data.views && data.views.length) setViews(data.views);
+    if (data.camera) flushSync(() => setCamera(data.camera));
+  }, [setCamera]);
 
-  const deleteView = (id) => {
-    setViews((vs) => vs.filter((v) => v.id !== id));
-    if (editingViewId === id) {
-      setEditingViewId(null);
-      setEditingName("");
-    }
+  // persistence: debounce saves on changes
+  const saveTimer = useRef(null);
+  const scheduleSave = () => {
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    const snapshot = {
+      v: 1,
+      nodes,
+      shapes,
+      views,
+      camera,
+    };
+    saveTimer.current = setTimeout(() => {
+      savePersisted(snapshot);
+      saveTimer.current = null;
+    }, 250);
   };
+  useEffect(() => {
+    scheduleSave();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nodes, shapes, views, camera]);
 
   const containerRef = useRef(null);
 
@@ -87,7 +183,7 @@ export default function Canvas() {
     };
   }, []);
 
-  // Blur helper (for dropping focus from contentEditable)
+  // Blur helper
   const blurActiveEditable = () => {
     const ae = document.activeElement;
     if (
@@ -152,7 +248,6 @@ export default function Canvas() {
     const el = containerRef.current;
     if (!el) return;
     const onWheel = (ev) => {
-      // cancel any running tween on user input
       if (ev.ctrlKey || ev.metaKey) {
         ev.preventDefault();
         handleWheelZoom(ev);
@@ -246,9 +341,8 @@ export default function Canvas() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // Double-click to add node (under cursor, with per-node scale)
+  // Double-click to add node — ignore dblclicks on UI or shapes
   const handleDoubleClick = (e) => {
-    // Ignore double-clicks that originate from UI (toolbars, inputs) or the shapes layer
     if (
       e.target?.isContentEditable ||
       e.target?.closest?.("[data-ui]") ||
@@ -295,37 +389,32 @@ export default function Canvas() {
     setSelectedIds([]);
     setFocusId(null);
   };
-  
-const textToHtml = (t = "") =>
-  t
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/\r\n/g, "\n")
-    .replace(/\n/g, "<br>");
-
-const combineSelected = ({
-  ids,
-  combinedText,
-  combinedHtml,
-  avgX,
-  avgY,
-  avgScale,
-}) => {
-  if (!ids || ids.length < 2) return;
-  const id = Date.now();
-
-  // Prefer rich HTML if provided; otherwise convert plain text to HTML safely
-  const html =
-    combinedHtml != null ? combinedHtml : textToHtml(combinedText || "");
-
-  setNodes((ns) => [
-    ...ns.filter((n) => !ids.includes(n.id)),
-    { id, x: avgX, y: avgY, text: html, scale: avgScale },
-  ]);
-  setSelectedIds([id]);
-  setFocusId(id);
-};
+  const textToHtml = (t = "") =>
+    t
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/\r\n/g, "\n")
+      .replace(/\n/g, "<br>");
+  const combineSelected = ({
+    ids,
+    combinedText,
+    combinedHtml,
+    avgX,
+    avgY,
+    avgScale,
+  }) => {
+    if (!ids || ids.length < 2) return;
+    const id = Date.now();
+    const html =
+      combinedHtml != null ? combinedHtml : textToHtml(combinedText || "");
+    setNodes((ns) => [
+      ...ns.filter((n) => !ids.includes(n.id)),
+      { id, x: avgX, y: avgY, text: html, scale: avgScale },
+    ]);
+    setSelectedIds([id]);
+    setFocusId(id);
+  };
 
   // 🔷 Shapes ops
   const addShape = (shape) => {
@@ -358,15 +447,12 @@ const combineSelected = ({
 
   // tween infrastructure
   const tweenRef = useRef(null);
-
   const cancelCameraTween = () => {
     if (tweenRef.current) {
       cancelAnimationFrame(tweenRef.current.raf);
       tweenRef.current = null;
     }
   };
-
-  // build camera from desired x,y and total Z, normalized into {zoomBase, zoomExp}
   const cameraFromXyZ = (x, y, Z) => {
     let zoomBase = Z;
     let zoomExp = 0;
@@ -380,88 +466,85 @@ const combineSelected = ({
     }
     return { x, y, zoomBase, zoomExp };
   };
-
   const easeInOutCubic = (t) =>
     t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-
   const animateToCamera = (targetCam, { duration = 500 } = {}) => {
     cancelCameraTween();
     const startCam = cameraRef.current;
     const startZ = scale(startCam);
     const endZ = scale(targetCam);
-
-    // avoid log(0)
     const logStartZ = Math.log(Math.max(1e-9, startZ));
     const logEndZ = Math.log(Math.max(1e-9, endZ));
-
     const startX = startCam.x,
       startY = startCam.y;
     const endX = targetCam.x,
       endY = targetCam.y;
-
     const t0 = performance.now();
-
     const step = (now) => {
       const t = Math.min(1, (now - t0) / duration);
       const u = easeInOutCubic(t);
-
-      // zoom: multiplicative lerp (log space)
       const logZ = logStartZ + (logEndZ - logStartZ) * u;
       const Zt = Math.exp(logZ);
-
-      // pan: linear in screen pixels
       const xt = startX + (endX - startX) * u;
       const yt = startY + (endY - startY) * u;
-
       const cam = cameraFromXyZ(xt, yt, Zt);
       setCamera(cam);
-
       if (t < 1 && tweenRef.current) {
         tweenRef.current.raf = requestAnimationFrame(step);
       } else {
         tweenRef.current = null;
-        // final snap to exact targetCam (already normalized)
         setCamera({ ...targetCam });
       }
     };
-
     tweenRef.current = { raf: requestAnimationFrame(step) };
   };
-
   const jumpToView = (viewCam, animated = true) => {
     clearSelectionsAndBlur();
     if (animated) animateToCamera(viewCam, { duration: 520 });
     else flushSync(() => setCamera({ ...viewCam }));
   };
-
-  const prevCountRef = useRef(0); // View 1, View 2, …
-
+  const prevCountRef = useRef(0);
   const saveCurrentView = () => {
     const pre = cameraRef.current;
-    // ensure normalized (no rebase)
     const { camera: norm } = normalizeZoomPure(pre);
     const idx = (prevCountRef.current += 1);
     const name = `View ${idx}`;
     setViews((vs) => [...vs, { id: Date.now(), name, camera: { ...norm } }]);
   };
-
   const startRenameView = (v) => {
-    if (v.id === "home") return; // don't rename Home
+    if (v.id === "home") return;
     setEditingViewId(v.id);
     setEditingName(v.name);
   };
-
   const commitRenameView = () => {
     const name = editingName.trim();
-    if (editingViewId) {
-      setViews((vs) =>
-        vs.map((v) =>
-          v.id === editingViewId ? { ...v, name: name || v.name } : v
-        )
-      );
-    }
+    setViews((vs) => {
+      if (!editingViewId) return vs;
+      let found = false;
+      const next = vs.map((v) => {
+        if (v.id === editingViewId) {
+          found = true;
+          return { ...v, name: name || v.name };
+        }
+        return v;
+      });
+      return found ? next : vs;
+    });
     setEditingViewId(null);
     setEditingName("");
+  };
+  const updateViewCamera = (id) => {
+    const { camera: norm } = normalizeZoomPure(cameraRef.current);
+    setViews((vs) =>
+      vs.map((v) => (v.id === id ? { ...v, camera: { ...norm } } : v))
+    );
+  };
+  const deleteView = (id) => {
+    setViews((vs) => vs.filter((v) => v.id !== id));
+    if (editingViewId === id) {
+      setEditingViewId(null);
+      setEditingName("");
+    }
   };
 
   const Z = scale(camera);
@@ -499,19 +582,16 @@ const combineSelected = ({
           right: 12,
           display: "flex",
           alignItems: "center",
-          justifyContent: "center",
           gap: 8,
-          zIndex: 1200,
+          zIndex: 1000,
           pointerEvents: "auto",
           flexWrap: "wrap",
         }}
       >
-        {/* Home chip */}
         <button
           title="Go Home (reset)"
           onClick={(e) => {
             e.stopPropagation();
-
             jumpToView({ x: 0, y: 0, zoomBase: 1, zoomExp: 0 }, true);
           }}
           style={chipStyle()}
@@ -519,7 +599,17 @@ const combineSelected = ({
           Home
         </button>
 
-        {/* Saved views */}
+        <button
+          title="Save current view"
+          onClick={(e) => {
+            e.stopPropagation();
+            saveCurrentView();
+          }}
+          style={chipStyle("#eef2ff")}
+        >
+          + Save view
+        </button>
+
         <div
           style={{
             display: "flex",
@@ -541,9 +631,7 @@ const combineSelected = ({
                       autoFocus
                       value={editingName}
                       onChange={(e) => setEditingName(e.target.value)}
-                      onBlur={() => {
-                        setTimeout(() => commitRenameView(), 0);
-                      }}
+                      onBlur={() => setTimeout(() => commitRenameView(), 0)} // let buttons run first
                       onKeyDown={(e) => {
                         if (e.key === "Enter") {
                           e.preventDefault();
@@ -562,46 +650,43 @@ const combineSelected = ({
                         width: Math.max(80, editingName.length * 8 + 24),
                       }}
                     />
-                    {/* Actions under the input */}
-                    <div style={{ display: "block" }}>
-                      <div
-                        data-ui
-                        onPointerDown={(e) => e.stopPropagation()}
-                        onDoubleClick={(e) => e.stopPropagation()}
+                    <div
+                      data-ui
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onDoubleClick={(e) => e.stopPropagation()}
+                      style={{
+                        display: "flex",
+                        gap: 6,
+                        marginTop: 4,
+                        alignItems: "center",
+                        justifyContent: "flex-start",
+                      }}
+                    >
+                      <button
+                        title="Update this view to the current pan/zoom"
+                        onPointerDown={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          updateViewCamera(v.id);
+                        }}
+                        style={chipStyle("#eef2ff")}
+                      >
+                        Update to current
+                      </button>
+                      <button
+                        title="Delete this view"
+                        onPointerDown={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          deleteView(v.id);
+                        }}
                         style={{
-                          display: "flex",
-                          gap: 6,
-                          marginTop: 4,
-                          alignItems: "center",
-                          justifyContent: "flex-start",
+                          ...chipStyle("#fee2e2"),
+                          borderColor: "#fecaca",
                         }}
                       >
-                        <button
-                          title="Update this view to the current pan/zoom"
-                          onPointerDown={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            updateViewCamera(v.id); // keeps rename mode open
-                          }}
-                          style={chipStyle("#eef2ff")}
-                        >
-                          Update to current
-                        </button>
-                        <button
-                          title="Delete this view"
-                          onPointerDown={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            deleteView(v.id); // keeps rename mode open
-                          }}
-                          style={{
-                            ...chipStyle("#fee2e2"),
-                            borderColor: "#fecaca",
-                          }}
-                        >
-                          Delete
-                        </button>
-                      </div>
+                        Delete
+                      </button>
                     </div>
                   </>
                 ) : (
@@ -623,15 +708,6 @@ const combineSelected = ({
               </div>
             ))}
         </div>
-
-        {/* Save view */}
-        <button
-          title="Save current view"
-          onClick={saveCurrentView}
-          style={chipStyle("#eef2ff")}
-        >
-          + Save view
-        </button>
       </div>
 
       {/* Right-side draw toolbar */}
@@ -751,8 +827,10 @@ const combineSelected = ({
         }}
         onDeleteSelected={deleteSelectedNodes}
         onCombineSelected={combineSelected}
-        onChange={(id, text) =>
-          setNodes((ns) => ns.map((n) => (n.id === id ? { ...n, text } : n)))
+        onChange={(id, html) =>
+          setNodes((ns) =>
+            ns.map((n) => (n.id === id ? { ...n, text: html } : n))
+          )
         }
         onBackgroundClickAway={clearSelectionsAndBlur}
       />

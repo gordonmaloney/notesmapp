@@ -1,0 +1,12 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "18"
+
+# If you didn’t add public/_redirects, you can do redirects here instead:
+# [[redirects]]
+#   from = "/*"
+#   to = "/index.html"
+#   status = 200
