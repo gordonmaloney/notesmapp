@@ -21,6 +21,11 @@ import { usePanZoom } from "../hooks/usePanZoom";
 const BASE_FONT_PX = 14;
 const NEW_NODE_FONT_PX = 18;
 
+// Mobile-only tuning (desktop unaffected)
+const PINCH_ZOOM_SENSITIVITY = 0.45; // lower = slower zoom on pinch
+const TAP_MAX_DELAY = 300; // ms between taps
+const TAP_MAX_DIST = 28; // px movement between taps
+
 export default function Canvas() {
   const { camera, setCamera } = useCamera();
 
@@ -151,7 +156,7 @@ export default function Canvas() {
   const Z = scale(camera);
   const doneNodeIds = new Set(tasks.filter((t) => t.done).map((t) => t.nodeId));
 
-  /** ─────────────── Double-click to add node ─────────────── **/
+  /** ─────────────── Double-click / double-tap to add node ─────────────── **/
   const handleDoubleClick = (e) => {
     // ignore UI or shapes overlay clicks (ViewsBar/TasksPanel/DrawToolbar/ShapesLayer can mark with data-ui or data-shapes-layer)
     if (
@@ -167,20 +172,29 @@ export default function Canvas() {
     const id = Date.now();
     const Zc = scale(cameraRef.current);
     const nodeScale = NEW_NODE_FONT_PX / ((BASE_FONT_PX * Zc) / 4);
-    setNodes((ns) => [
-      ...ns,
-      { id, x: world.x, y: world.y, text: "", scale: nodeScale },
-    ]);
-    setFocusId(id);
-    setSelectedIds([id]);
-    setSelectedShapeId(null);
+
+    const apply = () => {
+      setNodes((ns) => [
+        ...ns,
+        { id, x: world.x, y: world.y, text: "", scale: nodeScale },
+      ]);
+      setFocusId(id); // NodesLayer should autofocus this id
+      setSelectedIds([id]);
+      setSelectedShapeId(null);
+    };
+
+    // On touch, flush so the contentEditable exists before keyboard shows
+    if (e.pointerType === "touch") {
+      flushSync(apply);
+    } else {
+      apply();
+    }
   };
 
   const handleSingleClick = (e) => {
     if (activeTool !== "text") {
       return;
     }
-
     // Only exclude contentEditable and shapes layer, not all data-ui
     if (
       e.target?.isContentEditable ||
@@ -194,7 +208,6 @@ export default function Canvas() {
     const world = screenToWorld(screen, cameraRef.current);
     const id = Date.now();
     const Zc = scale(cameraRef.current);
-
     const nodeScale = NEW_NODE_FONT_PX / ((BASE_FONT_PX * Zc) / 4);
 
     setNodes((ns) => [
@@ -300,7 +313,6 @@ export default function Canvas() {
     setEditingName("");
   };
   const updateViewCamera = (id) => {
-    // store a normalized camera
     const { camera: norm } = normalizeZoomPure(cameraRef.current);
     setViews((vs) =>
       vs.map((v) => (v.id === id ? { ...v, camera: { ...norm } } : v))
@@ -425,15 +437,19 @@ export default function Canvas() {
     window.removeEventListener("pointerup", onSplitUp, true);
   };
 
-  /** ─────────────── Mobile: double-tap + pinch wrappers ─────────────── **/
+  /** ─────────────── Mobile: double-tap + pinch + two-finger pan ─────────────── **/
   const activePointers = useRef(new Map()); // pointerId -> {x,y}
-  const pinchState = useRef(null); // { startDist, startCam, centerScreen:[x,y] }
+  const pinchState = useRef(null);
+  // pinchState: {
+  //   startDist: number,
+  //   startCam: Camera,
+  //   startCenter: [x,y],
+  //   prevCenter: [x,y]
+  // }
   const lastTapRef = useRef({ t: 0, x: 0, y: 0 });
-  const TAP_MAX_DELAY = 300; // ms
-  const TAP_MAX_DIST = 28; // px
 
   const wrappedPointerDown = (e) => {
-    onPointerDown(e); // keep existing pan/drag flows
+    onPointerDown(e); // keep existing single-pointer pan/drag flows
 
     activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
@@ -448,26 +464,24 @@ export default function Canvas() {
       const isClose = Math.hypot(x - lx, y - ly) < TAP_MAX_DIST;
 
       if (isQuick && isClose) {
-        handleDoubleClick(e);
+        handleDoubleClick(e); // this will flushSync on touch to ensure focus
         lastTapRef.current = { t: 0, x: 0, y: 0 };
       } else {
         lastTapRef.current = { t: now, x, y };
       }
     }
 
-    // Start pinch when two pointers
+    // Start pinch/two-finger pan when two pointers
     if (activePointers.current.size === 2) {
       cancelCameraTween();
       const pts = [...activePointers.current.values()];
       const startDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
-      const centerScreen = [
-        (pts[0].x + pts[1].x) / 2,
-        (pts[0].y + pts[1].y) / 2,
-      ];
+      const center = [(pts[0].x + pts[1].x) / 2, (pts[0].y + pts[1].y) / 2];
       pinchState.current = {
         startDist,
         startCam: { ...cameraRef.current },
-        centerScreen,
+        startCenter: center,
+        prevCenter: center,
       };
     }
   };
@@ -480,34 +494,49 @@ export default function Canvas() {
     if (activePointers.current.size === 2 && pinchState.current) {
       const pts = [...activePointers.current.values()];
       const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
-      const { startDist, startCam, centerScreen } = pinchState.current;
+      const centerNow = [(pts[0].x + pts[1].x) / 2, (pts[0].y + pts[1].y) / 2];
+
+      const { startDist, startCam, prevCenter } = pinchState.current;
       if (startDist <= 0) return;
 
-      const factor = dist / startDist; // >1 in, <1 out
+      // Zoom factor with sensitivity (slower than default)
+      const rawFactor = dist / startDist;
+      const dampedExp =
+        Math.log2(Math.max(0.02, rawFactor)) * PINCH_ZOOM_SENSITIVITY;
 
       setCamera(() => {
-        const base = startCam;
+        // Apply zoom relative to the original snapshot (stable feel)
         const next = {
-          ...base,
-          zoomExp: base.zoomExp + Math.log2(Math.max(0.02, factor)),
+          ...startCam,
+          zoomExp: startCam.zoomExp + dampedExp,
         };
 
+        // Keep world point under current center fixed (anchor)
         const rect = containerRef.current.getBoundingClientRect();
-        const center = {
-          x: centerScreen[0] - rect.left,
-          y: centerScreen[1] - rect.top,
+        const centerScreen = {
+          x: centerNow[0] - rect.left,
+          y: centerNow[1] - rect.top,
         };
-
-        const w0 = screenToWorld(center, base);
-        const w1 = screenToWorld(center, next);
+        const w0 = screenToWorld(centerScreen, startCam);
+        const w1 = screenToWorld(centerScreen, next);
         next.x += w0.x - w1.x;
         next.y += w0.y - w1.y;
+
+        // Two-finger pan: translate by center pixel delta / scale
+        const dxPx = centerNow[0] - prevCenter[0];
+        const dyPx = centerNow[1] - prevCenter[1];
+        const Zc = scale(next);
+        next.x -= dxPx / Zc;
+        next.y -= dyPx / Zc;
 
         const { camera: normalized } = normalizeZoomPure(next);
         return normalized;
       });
 
-      return; // don’t also pan
+      // update prev center for incremental pan
+      pinchState.current.prevCenter = centerNow;
+
+      return; // don’t also pan/drag single-pointer stuff
     }
 
     onPointerMove(e);
@@ -540,13 +569,13 @@ export default function Canvas() {
         overflow: "hidden",
         background: "#fff",
         userSelect: "none",
-        touchAction: "none",
+        touchAction: "none", // keep default gestures off so we get pointers
         WebkitUserSelect: "none",
         overscrollBehavior: "none",
         cursor: "default",
       }}
-      // NOTE: mobile won't reliably fire onDoubleClick; double-tap is synthesized in wrappedPointerDown
-    onDoubleClick={handleDoubleClick}
+      // Desktop double-click still works natively
+      onDoubleClick={handleDoubleClick}
       onClick={handleSingleClick}
       onPointerDown={wrappedPointerDown}
       onPointerMove={wrappedPointerMove}
