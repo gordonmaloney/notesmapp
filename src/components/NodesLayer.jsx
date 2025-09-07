@@ -897,7 +897,8 @@ function NodeItem({
           wordBreak: "break-word",
           minWidth: 1,
           minHeight: 1,
-          background: isDone ? "#dcfce7" : "transparent", // ← pale green for done
+          textDecoration: isDone ? "line-through" : "inherit",
+          //background: isDone ? "#dcfce7" : "transparent", // ← pale green for done
         }}
       />
       {selected && !multiSelected && (

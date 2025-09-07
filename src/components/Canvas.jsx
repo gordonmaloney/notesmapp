@@ -166,7 +166,7 @@ export default function Canvas() {
     const world = screenToWorld(screen, cameraRef.current);
     const id = Date.now();
     const Zc = scale(cameraRef.current);
-    const nodeScale = NEW_NODE_FONT_PX / ((BASE_FONT_PX * Zc)/4);
+    const nodeScale = NEW_NODE_FONT_PX / ((BASE_FONT_PX * Zc) / 4);
     setNodes((ns) => [
       ...ns,
       { id, x: world.x, y: world.y, text: "", scale: nodeScale },
@@ -425,6 +425,112 @@ export default function Canvas() {
     window.removeEventListener("pointerup", onSplitUp, true);
   };
 
+  /** ─────────────── Mobile: double-tap + pinch wrappers ─────────────── **/
+  const activePointers = useRef(new Map()); // pointerId -> {x,y}
+  const pinchState = useRef(null); // { startDist, startCam, centerScreen:[x,y] }
+  const lastTapRef = useRef({ t: 0, x: 0, y: 0 });
+  const TAP_MAX_DELAY = 300; // ms
+  const TAP_MAX_DIST = 28; // px
+
+  const wrappedPointerDown = (e) => {
+    onPointerDown(e); // keep existing pan/drag flows
+
+    activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    // Double-tap synthesis (touch only)
+    if (e.pointerType === "touch") {
+      const now = performance.now();
+      const rect = containerRef.current.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      const { t, x: lx, y: ly } = lastTapRef.current;
+      const isQuick = now - t < TAP_MAX_DELAY;
+      const isClose = Math.hypot(x - lx, y - ly) < TAP_MAX_DIST;
+
+      if (isQuick && isClose) {
+        handleDoubleClick(e);
+        lastTapRef.current = { t: 0, x: 0, y: 0 };
+      } else {
+        lastTapRef.current = { t: now, x, y };
+      }
+    }
+
+    // Start pinch when two pointers
+    if (activePointers.current.size === 2) {
+      cancelCameraTween();
+      const pts = [...activePointers.current.values()];
+      const startDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+      const centerScreen = [
+        (pts[0].x + pts[1].x) / 2,
+        (pts[0].y + pts[1].y) / 2,
+      ];
+      pinchState.current = {
+        startDist,
+        startCam: { ...cameraRef.current },
+        centerScreen,
+      };
+    }
+  };
+
+  const wrappedPointerMove = (e) => {
+    if (activePointers.current.has(e.pointerId)) {
+      activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    }
+
+    if (activePointers.current.size === 2 && pinchState.current) {
+      const pts = [...activePointers.current.values()];
+      const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+      const { startDist, startCam, centerScreen } = pinchState.current;
+      if (startDist <= 0) return;
+
+      const factor = dist / startDist; // >1 in, <1 out
+
+      setCamera(() => {
+        const base = startCam;
+        const next = {
+          ...base,
+          zoomExp: base.zoomExp + Math.log2(Math.max(0.02, factor)),
+        };
+
+        const rect = containerRef.current.getBoundingClientRect();
+        const center = {
+          x: centerScreen[0] - rect.left,
+          y: centerScreen[1] - rect.top,
+        };
+
+        const w0 = screenToWorld(center, base);
+        const w1 = screenToWorld(center, next);
+        next.x += w0.x - w1.x;
+        next.y += w0.y - w1.y;
+
+        const { camera: normalized } = normalizeZoomPure(next);
+        return normalized;
+      });
+
+      return; // don’t also pan
+    }
+
+    onPointerMove(e);
+  };
+
+  const wrappedPointerUp = (e) => {
+    activePointers.current.delete(e.pointerId);
+    if (activePointers.current.size < 2) {
+      pinchState.current = null;
+    }
+    endPan(e);
+  };
+
+  const wrappedPointerCancel = (e) => {
+    activePointers.current.delete(e.pointerId);
+    pinchState.current = null;
+    endPan(e);
+  };
+
+  const wrappedPointerLeave = (e) => {
+    onPointerLeave(e);
+  };
+
   return (
     <div
       ref={containerRef}
@@ -435,16 +541,18 @@ export default function Canvas() {
         background: "#fff",
         userSelect: "none",
         touchAction: "none",
+        WebkitUserSelect: "none",
         overscrollBehavior: "none",
         cursor: "default",
       }}
-      onDoubleClick={handleDoubleClick}
+      // NOTE: mobile won't reliably fire onDoubleClick; double-tap is synthesized in wrappedPointerDown
+    onDoubleClick={handleDoubleClick}
       onClick={handleSingleClick}
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={endPan}
-      onPointerCancel={endPan}
-      onPointerLeave={onPointerLeave}
+      onPointerDown={wrappedPointerDown}
+      onPointerMove={wrappedPointerMove}
+      onPointerUp={wrappedPointerUp}
+      onPointerCancel={wrappedPointerCancel}
+      onPointerLeave={wrappedPointerLeave}
     >
       {/* ── Views (top bar) ───────────────────────────── */}
       <ViewsBar
