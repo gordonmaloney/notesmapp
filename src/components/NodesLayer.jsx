@@ -7,6 +7,9 @@ const RING_HIT = 8;
 const HANDLE_SIZE = 12;
 const HANDLE_OFFSET = 6;
 
+const WIDTH_HANDLE = 12; // new: width handle size
+const WIDTH_OFFSET = 6; // new: width handle offset from right edge
+
 const GROUP_HANDLE = 14;
 const GROUP_OFFSET = 8;
 
@@ -41,6 +44,9 @@ export default function NodesLayer({
   doneNodeIds,
   focusId,
   onChange, // (id, html)
+
+  // NEW: set per-node wrapping width in `ch` units (null = unconstrained)
+  onSetNodeWrap,
 }) {
   const { x: camX, y: camY } = camera;
   const rootRef = useRef(null);
@@ -56,13 +62,10 @@ export default function NodesLayer({
     else textRefs.current.delete(id);
   };
 
-  // put this helper near the top of NodesLayer.jsx
   const cleanHTML = (html) =>
     (html || "")
       .replace(/\r\n/g, "\n")
-      // collapse 3+ <br>s
       .replace(/(\s*<br\s*\/?>\s*){3,}/gi, "<br><br>")
-      // trim leading/trailing <br>s
       .replace(/^(?:\s*<br\s*\/?>)+/i, "")
       .replace(/(?:\s*<br\s*\/?>)+$/i, "");
 
@@ -123,7 +126,6 @@ export default function NodesLayer({
   const getFocusedEditor = () =>
     focusedEditorId ? textRefs.current.get(focusedEditorId) : null;
 
-  // Parse current editor HTML into "visual lines" preserving inline markup where possible
   const htmlToLines = (html) => {
     const tmp = document.createElement("div");
     tmp.innerHTML = html || "";
@@ -143,9 +145,7 @@ export default function NodesLayer({
         } else if (tag === "DIV" || tag === "P") {
           lines.push(node.innerHTML);
         } else if (tag === "OL" || tag === "UL") {
-          // unwrap existing list to lines
           node.querySelectorAll(":scope > li").forEach((li) => {
-            // For checklist, use span if present to get text+inline marks
             const labelSpan = li.querySelector("label > span");
             lines.push(labelSpan ? labelSpan.innerHTML : li.innerHTML);
           });
@@ -157,15 +157,12 @@ export default function NodesLayer({
       }
     });
     if (cur.trim() !== "") flush();
-
-    // normalize empties (skip purely empty lines)
     return lines.filter((l) => l.replace(/<br\s*\/?>/gi, "").trim() !== "");
   };
 
   const setEditorHTML = (el, html, alsoUpdateState = true) => {
     if (!el) return;
     el.innerHTML = html || "";
-    // place caret at end
     const sel = window.getSelection();
     if (sel) {
       sel.removeAllRanges();
@@ -174,7 +171,6 @@ export default function NodesLayer({
       r.collapse(false);
       sel.addRange(r);
     }
-    // optionally sync state so changes persist across selection changes
     if (alsoUpdateState && focusedEditorId != null) {
       onChange?.(focusedEditorId, html || "");
     }
@@ -184,7 +180,6 @@ export default function NodesLayer({
     const el = getFocusedEditor();
     if (!el) return;
 
-    // If already an ordered list at top level, unwrap back to lines
     const first = el.firstElementChild;
     if (first && first.tagName === "OL") {
       const lines = Array.from(first.querySelectorAll(":scope > li")).map(
@@ -235,7 +230,7 @@ export default function NodesLayer({
     setEditorHTML(el, list);
   };
 
-  // ===== marquee + group selection (unchanged) =====
+  // ===== marquee + group selection =====
   const [dragSel, setDragSel] = useState(null);
   const [groupLiveFactor, setGroupLiveFactor] = useState(null);
   const groupLiveFactorRef = useRef(1);
@@ -269,7 +264,7 @@ export default function NodesLayer({
         height: B - T,
       });
     } else setGroupRect(null);
-  }, [selectedIds, nodes, Z, camX, camY]);
+  }, [selectedIds, nodes, Z, camera.x, camera.y]);
 
   const downRef = useRef(null);
   const CLICK_EPS = 3;
@@ -341,7 +336,7 @@ export default function NodesLayer({
     }
   };
 
-  // group resize (unchanged)
+  // group resize
   const groupMoveUpCleanup = useRef(null);
   const onGroupHandleDown = (e) => {
     if (e.button !== 0 || !groupRect) return;
@@ -384,7 +379,6 @@ export default function NodesLayer({
 
   useEffect(() => () => groupMoveUpCleanup.current?.(), []);
 
-  // toolbar actions (group) unchanged
   const normalizeText = (t) =>
     t
       .replace(/\r\n/g, "\n")
@@ -395,20 +389,17 @@ export default function NodesLayer({
     e.stopPropagation();
     onDeleteSelected?.();
   };
-  // replace your onCombineSelectedClick with this:
   const onCombineSelectedClick = (e) => {
     e.preventDefault();
     e.stopPropagation();
     if (!selectedIds || selectedIds.length < 2) return;
 
-    // Sort by world Y then X (top→bottom, then left→right)
     const byId = new Map(nodes.map((n) => [n.id, n]));
     const selectedNodes = selectedIds
       .map((id) => byId.get(id))
       .filter(Boolean)
       .sort((a, b) => a.y - b.y || a.x - b.x);
 
-    // Pull LIVE HTML from DOM (captures unsaved edits & styling)
     const partsHtml = selectedNodes.map((n) => {
       const el = textRefs.current.get(n.id);
       const liveHtml = el?.innerHTML;
@@ -484,6 +475,7 @@ export default function NodesLayer({
           }}
           onAddTask={() => onAddTaskNode?.(n.id)}
           isDone={doneNodeIds?.has(n.id)}
+          onSetWrap={(wrapChOrNull) => onSetNodeWrap?.(n.id, wrapChOrNull)}
         />
       ))}
 
@@ -492,21 +484,15 @@ export default function NodesLayer({
         <div
           data-ui
           style={{
-            fontSize: `${fontPx}px`,
-            lineHeight: 1.2,
-            textRendering: "optimizeLegibility",
-            WebkitFontSmoothing: "antialiased",
-            MozOsxFontSmoothing: "grayscale",
-            padding: "2px 4px",
-            background: "transparent",
-            userSelect: "text",
-            whiteSpace: "pre-wrap", // Changed from "normal" to preserve line breaks but allow some wrapping
-            wordBreak: "normal", // Changed from "break-word" to prevent aggressive breaking
-            overflowWrap: "break-word", // Only break long words when absolutely necessary
-            width: "max-content", // Prevent container-based wrapping
-            minWidth: 1,
-            minHeight: 1,
-            background: isDone ? "#dcfce7" : "transparent", // ← pale green for done
+            position: "fixed",
+            left: Math.min(dragSel.x0, dragSel.x1),
+            top: Math.min(dragSel.y0, dragSel.y1),
+            width: Math.abs(dragSel.x1 - dragSel.x0),
+            height: Math.abs(dragSel.y1 - dragSel.y0),
+            border: "1px dashed #60a5fa",
+            background: "rgba(96,165,250,0.08)",
+            pointerEvents: "none",
+            zIndex: 100,
           }}
         />
       )}
@@ -597,7 +583,7 @@ export default function NodesLayer({
             bottom: 12,
             transform: "translateX(-50%)",
             display: "inline-flex",
-            width: "max-content", // Add this
+            width: "max-content",
             gap: 8,
             padding: "6px 8px",
             background: "#fff",
@@ -633,7 +619,6 @@ export default function NodesLayer({
           >
             <span style={{ fontStyle: "italic" }}>I</span>
           </button>
-          {/* NEW: Ordered list */}
           <button
             type="button"
             data-ui
@@ -647,7 +632,6 @@ export default function NodesLayer({
           >
             1.
           </button>
-          {/* NEW: Checklist */}
           <button
             type="button"
             data-ui
@@ -688,9 +672,11 @@ function NodeItem({
   onEditorBlur,
   onAddTask,
   isDone,
+  onSetWrap, // NEW
 }) {
   const wrapperRef = useRef(null);
   const textRef = useRef(null);
+  const chProbeRef = useRef(null); // measuring element for 1ch
 
   const modeRef = useRef("none");
   const lastClient = useRef({ x: 0, y: 0 });
@@ -699,6 +685,11 @@ function NodeItem({
   const startScale = useRef(node.scale ?? 1);
   const lastScaleRef = useRef(node.scale ?? 1);
   const singleMoveUpCleanup = useRef(null);
+
+  // width drag state
+  const widthMoveCleanup = useRef(null);
+  const startWrapChRef = useRef(null);
+  const chPxRef = useRef(8); // fallback
 
   const basePx = 14;
   const selfScale = node.scale ?? 1;
@@ -710,6 +701,18 @@ function NodeItem({
 
   const leftScr = node.x * Z + camX;
   const topScr = node.y * Z + camY;
+
+  // measure "1ch" in current font (in screen px)
+  const measureChPx = () => {
+    const probe = chProbeRef.current;
+    if (!probe) return;
+    const r = probe.getBoundingClientRect();
+    if (r.width > 0) chPxRef.current = r.width / 10; // probe is 10ch wide
+  };
+
+  useLayoutEffect(() => {
+    measureChPx();
+  }, [fontPx, Z]);
 
   useEffect(() => {
     if (wrapperRef.current) setWrapperRef(wrapperRef.current);
@@ -723,6 +726,7 @@ function NodeItem({
     effectiveScale,
     node.text,
   ]);
+
   // Uncontrolled: only set HTML when prop changes and not focused
   useEffect(() => {
     const el = textRef.current;
@@ -792,6 +796,7 @@ function NodeItem({
     }
   };
 
+  // ===== scale (bottom-right) =====
   const onSingleHandleDown = (e) => {
     if (e.button !== 0) return;
     if (!selected || multiSelected) return;
@@ -835,12 +840,68 @@ function NodeItem({
   };
   useEffect(() => () => singleMoveUpCleanup.current?.(), []);
 
+  // ===== width (right-middle) =====
+  const onWidthHandleDown = (e) => {
+    if (e.button !== 0) return;
+    if (!selected || multiSelected) return;
+
+    // measure ch px at drag start
+    measureChPx();
+
+    startClient.current = { x: e.clientX, y: e.clientY };
+
+    // start from explicit wrapCh, or infer current width in ch
+    const el = textRef.current;
+    const r = el?.getBoundingClientRect();
+    const currentCh = node.wrapCh ?? (r ? r.width / chPxRef.current : 40);
+    startWrapChRef.current = Math.max(4, currentCh); // sane minimum
+
+    const onMove = (ev) => {
+      const dxPx = ev.clientX - startClient.current.x;
+      const deltaCh = dxPx / chPxRef.current;
+      let nextCh = startWrapChRef.current + deltaCh;
+      // step rounding for nicer numbers (hold Alt for finer steps)
+      const step = ev.altKey ? 0.25 : 0.5;
+      nextCh = Math.max(4, Math.round(nextCh / step) * step);
+      onSetWrap?.(nextCh);
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp, true);
+      widthMoveCleanup.current = null;
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp, true);
+    widthMoveCleanup.current = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp, true);
+    };
+
+    e.preventDefault();
+    e.stopPropagation();
+  };
+  useEffect(() => () => widthMoveCleanup.current?.(), []);
+
+  const onWidthHandleDoubleClick = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    // reset to "unconstrained" (one long line)
+    onSetWrap?.(null);
+  };
+
   const onDeletePointerDown = (e) => {
     if (e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
     onDelete?.();
   };
+
+  // width style: unconstrained (max-content) vs fixed columns (wrapCh)
+  const widthStyle =
+    node.wrapCh != null && isFinite(node.wrapCh)
+      ? { width: `${node.wrapCh}ch` }
+      : { width: "max-content" };
 
   return (
     <div
@@ -862,9 +923,23 @@ function NodeItem({
       onPointerUp={onWrapperPointerUp}
       onPointerCancel={onWrapperPointerUp}
     >
+      {/* probe to measure 1ch (10ch for precision) */}
+      <span
+        ref={chProbeRef}
+        aria-hidden
+        style={{
+          position: "absolute",
+          visibility: "hidden",
+          pointerEvents: "none",
+          width: "10ch",
+          height: 0,
+          overflow: "hidden",
+        }}
+      />
+
       <div
         ref={textRef}
-        className="node-text-unconstrained"
+        className="node-text"
         contentEditable
         suppressContentEditableWarning
         onFocus={() => onEditorFocus?.()}
@@ -885,6 +960,7 @@ function NodeItem({
           );
         }}
         style={{
+          ...widthStyle,
           fontSize: `${fontPx}px`,
           lineHeight: 1.2,
           textRendering: "optimizeLegibility",
@@ -893,16 +969,18 @@ function NodeItem({
           padding: "2px 4px",
           background: "transparent",
           userSelect: "text",
-          whiteSpace: "normal",
-          wordBreak: "break-word",
-          minWidth: 1,
+          whiteSpace: "pre-wrap", // preserve manual breaks; allow wrapping
+          wordBreak: "break-word", // break long words if needed
+          overflowWrap: "break-word",
+          minWidth: "20px",
           minHeight: 1,
           textDecoration: isDone ? "line-through" : "inherit",
-          //background: isDone ? "#dcfce7" : "transparent", // ← pale green for done
         }}
       />
+
       {selected && !multiSelected && (
         <>
+          {/* delete button */}
           <div
             onPointerDown={onDeletePointerDown}
             data-ui
@@ -921,6 +999,7 @@ function NodeItem({
             }}
           />
 
+          {/* add to tasks */}
           <div
             data-ui
             onPointerDown={(e) => {
@@ -932,7 +1011,7 @@ function NodeItem({
             title="Add to Tasks"
             style={{
               position: "absolute",
-              right: -(12 + 6), // size + offset
+              right: -(12 + 6),
               top: -(12 + 6),
               width: 12,
               height: 12,
@@ -943,6 +1022,8 @@ function NodeItem({
               cursor: "pointer",
             }}
           />
+
+          {/* scale handle (bottom-right) */}
           <div
             data-ui
             onPointerDown={onSingleHandleDown}
@@ -958,7 +1039,32 @@ function NodeItem({
               boxShadow: "0 1px 2px rgba(0,0,0,0.15)",
               cursor: "nwse-resize",
             }}
-            title="Resize"
+            title="Resize (scale text)"
+          />
+
+          {/* NEW: width handle (right-middle) */}
+          <div
+            data-ui
+            onPointerDown={onWidthHandleDown}
+            onDoubleClick={onWidthHandleDoubleClick}
+            style={{
+              position: "absolute",
+              right: -(WIDTH_HANDLE + WIDTH_OFFSET),
+              top: "50%",
+              transform: "translateY(-50%)",
+              width: WIDTH_HANDLE,
+              height: WIDTH_HANDLE,
+              background: "#fff",
+              border: `2px solid ${BLUE}`,
+              borderRadius: 3,
+              boxShadow: "0 1px 2px rgba(0,0,0,0.15)",
+              cursor: "ew-resize",
+            }}
+            title={
+              node.wrapCh != null
+                ? `Width: ${node.wrapCh}ch (drag / Alt for fine, dbl-click to unset)`
+                : "Set width (drag), dbl-click to unset"
+            }
           />
         </>
       )}

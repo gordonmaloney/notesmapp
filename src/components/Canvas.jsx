@@ -19,15 +19,25 @@ import { usePanZoom } from "../hooks/usePanZoom";
 
 /** ────────────────────────── Config ────────────────────────── **/
 const BASE_FONT_PX = 14;
-const NEW_NODE_FONT_PX = 18;
+const NEW_NODE_FONT_PX = 10;
 
 // Mobile-only tuning (desktop unaffected)
 const PINCH_ZOOM_SENSITIVITY = 0.45; // lower = slower zoom on pinch
 const TAP_MAX_DELAY = 300; // ms between taps
 const TAP_MAX_DIST = 28; // px movement between taps
 
-export default function Canvas() {
+// Default node wrap
+const DEFAULT_NODE_WRAP_PX = 500;
+// rough width of 1ch relative to 1em; good practical default
+const CH_PER_EM_GUESS = 0.5;
+
+export default function Canvas({ docId = "home" }) {
   const { camera, setCamera } = useCamera();
+
+  // set tab title per doc
+  useEffect(() => {
+    document.title = `Canvas – ${docId}`;
+  }, [docId]);
 
   // live camera ref
   const cameraRef = useRef(camera);
@@ -67,18 +77,26 @@ export default function Canvas() {
 
   /** ─────────────── Load persisted on mount ─────────────── **/
   useEffect(() => {
-    const data = loadPersisted();
-    if (!data) return;
-    if (data.nodes) setNodes(data.nodes);
-    if (data.shapes) setShapes(data.shapes);
-    if (data.views && data.views.length) setViews(data.views);
-    if (data.tasks) setTasks(data.tasks);
-    if (typeof data?.ui?.tasksOpen === "boolean")
-      setTasksOpen(data.ui.tasksOpen);
-    if (typeof data?.ui?.taskSplit === "number")
-      setTaskSplit(data.ui.taskSplit);
-    if (data.camera) flushSync(() => setCamera(data.camera));
-  }, [setCamera]);
+    let alive = true;
+    (async () => {
+      const data = await loadPersisted(docId);
+      if (!alive || !data) return;
+
+      if (data.nodes) setNodes(data.nodes);
+      if (data.shapes) setShapes(data.shapes);
+      if (data.views && data.views.length) setViews(data.views);
+      if (data.tasks) setTasks(data.tasks);
+      if (typeof data?.ui?.tasksOpen === "boolean")
+        setTasksOpen(data.ui.tasksOpen);
+      if (typeof data?.ui?.taskSplit === "number")
+        setTaskSplit(data.ui.taskSplit);
+      if (data.camera) flushSync(() => setCamera(data.camera));
+    })();
+
+    return () => {
+      alive = false;
+    };
+  }, [docId, setCamera]);
 
   /** ─────────────── Persist on change (debounced) ─────────────── **/
   const saveTimer = useRef(null);
@@ -94,10 +112,18 @@ export default function Canvas() {
     };
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
-      savePersisted(snapshot);
+      savePersisted(docId, snapshot);
       saveTimer.current = null;
     }, 250);
-  }, [nodes, shapes, views, tasks, camera, tasksOpen, taskSplit]);
+
+    // clean up pending timer if docId or deps change quickly / unmount
+    return () => {
+      if (saveTimer.current) {
+        clearTimeout(saveTimer.current);
+        saveTimer.current = null;
+      }
+    };
+  }, [docId, nodes, shapes, views, tasks, camera, tasksOpen, taskSplit]);
 
   /** ─────────────── Container + pan/zoom ─────────────── **/
   const containerRef = useRef(null);
@@ -176,7 +202,14 @@ export default function Canvas() {
     const apply = () => {
       setNodes((ns) => [
         ...ns,
-        { id, x: world.x, y: world.y, text: "", scale: nodeScale },
+        {
+          id,
+          x: world.x,
+          y: world.y,
+          text: "",
+          scale: nodeScale,
+          wrapCh: computeInitialWrapCh(cameraRef),
+        },
       ]);
       setFocusId(id); // NodesLayer should autofocus this id
       setSelectedIds([id]);
@@ -212,7 +245,14 @@ export default function Canvas() {
 
     setNodes((ns) => [
       ...ns,
-      { id, x: world.x, y: world.y, text: "", scale: nodeScale },
+      {
+        id,
+        x: world.x,
+        y: world.y,
+        text: "",
+        scale: nodeScale,
+        wrapCh: computeInitialWrapCh(cameraRef),
+      },
     ]);
     setFocusId(id);
     setSelectedIds([id]);
@@ -560,6 +600,23 @@ export default function Canvas() {
     onPointerLeave(e);
   };
 
+  const setNodeWrap = (id, wrapChOrNull) => {
+    setNodes((ns) =>
+      ns.map((n) => (n.id === id ? { ...n, wrapCh: wrapChOrNull } : n))
+    );
+  };
+
+  function computeInitialWrapCh(cameraRef) {
+    const Zc = scale(cameraRef.current);
+    // this mirrors your new-node scale math so fontPx cancels Z nicely
+    const nodeScale = NEW_NODE_FONT_PX / ((BASE_FONT_PX * Zc) / 4);
+    const fontPx = BASE_FONT_PX * Zc * nodeScale; // ≈ NEW_NODE_FONT_PX * 4
+    const chPx = fontPx * CH_PER_EM_GUESS;
+    const raw = DEFAULT_NODE_WRAP_PX / Math.max(1, chPx);
+    // round to nice halves and clamp to a sane minimum
+    return Math.max(4, Math.round(raw * 2) / 2);
+  }
+
   return (
     <div
       ref={containerRef}
@@ -662,6 +719,7 @@ export default function Canvas() {
         nodes={nodes}
         Z={Z}
         camera={camera}
+        onSetNodeWrap={setNodeWrap}
         focusId={focusId}
         selectedIds={selectedIds}
         onSetSelection={setSelectedIds}

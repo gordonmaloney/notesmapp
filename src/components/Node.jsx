@@ -24,7 +24,7 @@ export default function Node({ node, onChange, autoFocus }) {
         left: node.x,
         top: node.y,
         fontSize: 14, // base size only
-        whiteSpace: "pre",
+        whiteSpace: "normal",
         width: "max-content", // Prevents wrapping by allowing unlimited width
         minWidth: 0, // Allows shrinking below default minimums
       }}

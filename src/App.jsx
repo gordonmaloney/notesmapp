@@ -1,5 +1,16 @@
+import { Routes, Route, Navigate, useParams } from "react-router-dom";
 import Canvas from "./components/Canvas";
 
+function CanvasRoute() {
+  const { docId } = useParams();
+  return <Canvas docId={docId ?? "home"} />;
+}
+
 export default function App() {
-  return <Canvas />;
+  return (
+    <Routes>
+      <Route path="/" element={<Navigate to="/home" replace />} />
+      <Route path="/:docId" element={<CanvasRoute />} />
+    </Routes>
+  );
 }

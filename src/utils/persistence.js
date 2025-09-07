@@ -1,14 +1,22 @@
-// src/utils/persistence.js
 import { normalizeZoomPure } from "../hooks/useCamera";
-const STORAGE_KEY = "infcanvas.v1";
+
+const API_BASE = import.meta.env?.VITE_API_BASE || null; // e.g. http://localhost:3001
+const WRITE_HEADERS = {
+  "Content-Type": "application/json",
+  ...(import.meta.env?.VITE_API_TOKEN
+    ? { Authorization: `Bearer ${import.meta.env.VITE_API_TOKEN}` }
+    : {}),
+};
 
 const coerceNum = (n, d = 0) => (typeof n === "number" && isFinite(n) ? n : d);
 
-export function loadPersisted() {
+function storageKey(docId) {
+  return `infcanvas.v1.${docId}`;
+}
+
+function parseSnapshot(data) {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return null;
-    const data = JSON.parse(raw);
+    if (!data || typeof data !== "object") return null;
 
     let cam =
       data.camera && typeof data.camera === "object" ? data.camera : null;
@@ -22,18 +30,19 @@ export function loadPersisted() {
       cam = normalizeZoomPure(cam).camera;
     }
 
-    const nodes = Array.isArray(data.nodes)
-      ? data.nodes.map((n) => ({
-          id: n.id ?? Date.now() + Math.random(),
-          x: coerceNum(n.x, 0),
-          y: coerceNum(n.y, 0),
-          text: typeof n.text === "string" ? n.text : "",
-          scale: (() => {
-            const s = coerceNum(n.scale, 1);
-            return Math.min(20, Math.max(0.05, s));
-          })(),
-        }))
-      : [];
+const nodes = Array.isArray(data.nodes)
+  ? data.nodes.map((n) => ({
+      id: n.id ?? Date.now() + Math.random(),
+      x: coerceNum(n.x, 0),
+      y: coerceNum(n.y, 0),
+      text: typeof n.text === "string" ? n.text : "",
+      scale: (() => {
+        const s = coerceNum(n.scale, 1);
+        return Math.min(20, Math.max(0.05, s));
+      })(),
+     wrapCh: typeof n.wrapCh === "number" && isFinite(n.wrapCh) ? n.wrapCh : null,
+    }))
+  : [];
 
     const shapes = Array.isArray(data.shapes)
       ? data.shapes.filter(
@@ -108,8 +117,44 @@ export function loadPersisted() {
   }
 }
 
-export function savePersisted(payload) {
+function readLocal(docId) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+    const raw = localStorage.getItem(storageKey(docId));
+    if (!raw) return null;
+    return parseSnapshot(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+
+function writeLocal(docId, payload) {
+  try {
+    localStorage.setItem(storageKey(docId), JSON.stringify(payload));
   } catch {}
+}
+
+export async function loadPersisted(docId = "home") {
+  if (!API_BASE) return readLocal(docId);
+
+  try {
+    const res = await fetch(`${API_BASE}/api/doc/${encodeURIComponent(docId)}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json(); // may be null
+    const parsed = json ? parseSnapshot(json) : null;
+    if (!parsed) return readLocal(docId);
+    writeLocal(docId, parsed);
+    return parsed;
+  } catch {
+    return readLocal(docId);
+  }
+}
+
+export function savePersisted(docId, payload) {
+  writeLocal(docId, payload);
+  if (!API_BASE) return;
+  fetch(`${API_BASE}/api/doc/${encodeURIComponent(docId)}`, {
+    method: "PUT",
+    headers: WRITE_HEADERS,
+    body: JSON.stringify(payload),
+  }).catch(() => {});
 }
