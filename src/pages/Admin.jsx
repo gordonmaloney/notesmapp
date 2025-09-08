@@ -253,7 +253,7 @@ export default function Admin() {
                       style={{ display: "flex", alignItems: "center", gap: 8 }}
                     >
                       <Link
-                        to={`/?doc=${encodeURIComponent(d.id)}`}
+                        to={`/${encodeURIComponent(d.id)}`}
                         style={{ flex: 1, minWidth: 0 }}
                       >
                         <div
