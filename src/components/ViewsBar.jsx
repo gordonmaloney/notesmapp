@@ -32,7 +32,7 @@ export default function ViewsBar({
         left: 12,
         right: 12,
         display: "flex",
-        alignItems: "center",
+        alignItems: "flex-start",
         justifyContent: "center",
         gap: 8,
         zIndex: 1000,
@@ -58,10 +58,12 @@ export default function ViewsBar({
           .map((v) => (
             <div
               key={v.id}
-              style={{ display: "inline-flex", flexDirection: "column" }}
+              style={{ display: "flex", flexDirection: "column" }}
             >
               {editingViewId === v.id ? (
-                <>
+                <div
+                style={{display: "flex", flexDirection: 'column'}}
+                >
                   <input
                     autoFocus
                     value={editingName}
@@ -90,6 +92,7 @@ export default function ViewsBar({
                     onDoubleClick={(e) => e.stopPropagation()}
                     style={{
                       display: "flex",
+                      flexDirection: 'column',
                       gap: 6,
                       marginTop: 4,
                       alignItems: "center",
@@ -105,7 +108,7 @@ export default function ViewsBar({
                       }}
                       style={chipStyle("#eef2ff")}
                     >
-                      Update to current
+                      Update view
                     </button>
                     <button
                       title="Delete this view"
@@ -122,7 +125,7 @@ export default function ViewsBar({
                       Delete
                     </button>
                   </div>
-                </>
+                </div>
               ) : (
                 <button
                   onClick={(e) => {

@@ -6,6 +6,8 @@ import { loadPersisted, savePersisted } from "../utils/persistence";
 import { textToHtml } from "../utils/html";
 import { screenToWorld } from "../utils/math";
 
+import { Link } from "react-router-dom";
+
 import Grid from "./Grid";
 import NodesLayer from "./NodesLayer";
 import ShapesLayer from "./ShapesLayer";
@@ -13,6 +15,7 @@ import DrawOverlay from "./DrawOverlay";
 import ViewsBar from "./ViewsBar";
 import TasksPanel from "./TasksPanel";
 import DrawToolbar from "./DrawToolbar";
+import ZoomBtns from "./ZoomBtns";
 
 import { useCameraTween } from "../hooks/useCameraTween";
 import { usePanZoom } from "../hooks/usePanZoom";
@@ -21,20 +24,19 @@ import { usePanZoom } from "../hooks/usePanZoom";
 const BASE_FONT_PX = 14;
 const NEW_NODE_FONT_PX = 10;
 
-// Mobile-only tuning (desktop unaffected)
-const PINCH_ZOOM_SENSITIVITY = 0.45; // lower = slower zoom on pinch
-const TAP_MAX_DELAY = 300; // ms between taps
-const TAP_MAX_DIST = 28; // px movement between taps
+// Mobile-only tuning / gestures
+const PINCH_ZOOM_SENSITIVITY = 0.45;
+const TAP_MAX_DELAY = 300;
+const TAP_MAX_DIST = 28;
 
-// Default node wrap
+// Node wrap defaults
 const DEFAULT_NODE_WRAP_PX = 500;
-// rough width of 1ch relative to 1em; good practical default
 const CH_PER_EM_GUESS = 0.5;
 
 export default function Canvas({ docId = "home" }) {
   const { camera, setCamera } = useCamera();
+  const nodesMeasureRef = useRef(null);
 
-  // set tab title per doc
   useEffect(() => {
     document.title = `Canvas – ${docId}`;
   }, [docId]);
@@ -49,17 +51,14 @@ export default function Canvas({ docId = "home" }) {
     useCameraTween(setCamera);
 
   /** ─────────────── State ─────────────── **/
-  // nodes / selection
   const [nodes, setNodes] = useState([]);
   const [focusId, setFocusId] = useState(null);
   const [selectedIds, setSelectedIds] = useState([]);
 
-  // shapes
   const [shapes, setShapes] = useState([]);
   const [selectedShapeId, setSelectedShapeId] = useState(null);
-  const [activeTool, setActiveTool] = useState(null); // 'line'|'rect'|'circle'|null
+  const [activeTool, setActiveTool] = useState(null);
 
-  // views
   const [views, setViews] = useState([
     {
       id: "home",
@@ -70,8 +69,7 @@ export default function Canvas({ docId = "home" }) {
   const [editingViewId, setEditingViewId] = useState(null);
   const [editingName, setEditingName] = useState("");
 
-  // tasks + UI split
-  const [tasks, setTasks] = useState([]); // {id,nodeId,camera,done}
+  const [tasks, setTasks] = useState([]);
   const [tasksOpen, setTasksOpen] = useState(false);
   const [taskSplit, setTaskSplit] = useState(0.55);
 
@@ -92,13 +90,47 @@ export default function Canvas({ docId = "home" }) {
         setTaskSplit(data.ui.taskSplit);
       if (data.camera) flushSync(() => setCamera(data.camera));
     })();
-
     return () => {
       alive = false;
     };
   }, [docId, setCamera]);
 
-  /** ─────────────── Persist on change (debounced) ─────────────── **/
+  // Helpers for a smart default view title
+  const titleFromHtml = (html) => {
+    if (!html) return "";
+    const div = document.createElement("div");
+    div.innerHTML = html;
+    const text = (div.innerText || "").replace(/\u00a0/g, " ").trim();
+    const firstLine = text.split(/\r?\n/).find((l) => l.trim().length) || "";
+    const trimmed = firstLine.replace(/\s+/g, " ").trim();
+    return trimmed.length > 60 ? trimmed.slice(0, 57) + "…" : trimmed;
+  };
+  const computeDefaultViewName = () => {
+    const api = nodesMeasureRef.current;
+    const container = containerRef.current;
+    if (!api || !container) return null;
+    const viewport = container.getBoundingClientRect();
+    const metrics = api.getMetrics?.() || [];
+    const visible = metrics
+      .map(({ id, rect, area }) => {
+        const L = Math.max(rect.left, viewport.left);
+        const R = Math.min(rect.right, viewport.right);
+        const T = Math.max(rect.top, viewport.top);
+        const B = Math.min(rect.bottom, viewport.bottom);
+        const interW = Math.max(0, R - L);
+        const interH = Math.max(0, B - T);
+        const intersects = interW > 0 && interH > 0;
+        return { id, intersects, top: rect.top, left: rect.left, area };
+      })
+      .filter((m) => m.intersects);
+    if (!visible.length) return null;
+    visible.sort((a, b) => b.area - a.area || a.top - b.top || a.left - b.left);
+    const best = visible[0];
+    const node = nodes.find((n) => n.id === best.id);
+    return titleFromHtml(node?.text) || null;
+  };
+
+  /** ─────────────── Persist (debounced) ─────────────── **/
   const saveTimer = useRef(null);
   useEffect(() => {
     const snapshot = {
@@ -115,8 +147,6 @@ export default function Canvas({ docId = "home" }) {
       savePersisted(docId, snapshot);
       saveTimer.current = null;
     }, 250);
-
-    // clean up pending timer if docId or deps change quickly / unmount
     return () => {
       if (saveTimer.current) {
         clearTimeout(saveTimer.current);
@@ -127,15 +157,10 @@ export default function Canvas({ docId = "home" }) {
 
   /** ─────────────── Container + pan/zoom ─────────────── **/
   const containerRef = useRef(null);
-  const {
-    onPointerDown,
-    onPointerMove,
-    endPan,
-    onPointerLeave,
-    onKeyZoom, // optional key zoom handler from usePanZoom
-  } = usePanZoom(containerRef, cameraRef, setCamera, cancelCameraTween);
+  const { onPointerDown, onPointerMove, endPan, onPointerLeave, onKeyZoom } =
+    usePanZoom(containerRef, cameraRef, setCamera, cancelCameraTween);
 
-  /** ─────────────── Keyboard: Escape / 0 / +/- ─────────────── **/
+  /** ─────────────── Keyboard ─────────────── **/
   const blurActiveEditable = () => {
     const ae = document.activeElement;
     if (
@@ -157,21 +182,17 @@ export default function Canvas({ docId = "home" }) {
         clearSelectionsAndBlur();
         return;
       }
-
-      // otherwise ignore when typing
       if (
         e.target?.isContentEditable ||
         /^(INPUT|TEXTAREA|SELECT)$/.test(e.target?.tagName)
       ) {
         return;
       }
-
       if (e.key === "0") {
         e.preventDefault();
-        resetView();
+        resetView(cameraRef, containerRef, true);
         return;
       }
-      // delegate +/- to pan-zoom hook if provided
       onKeyZoom?.(e);
     };
     window.addEventListener("keydown", onKey);
@@ -182,9 +203,54 @@ export default function Canvas({ docId = "home" }) {
   const Z = scale(camera);
   const doneNodeIds = new Set(tasks.filter((t) => t.done).map((t) => t.nodeId));
 
-  /** ─────────────── Double-click / double-tap to add node ─────────────── **/
+  /** ─────────────── Android-friendly focus helpers ───────── **/
+  const focusTimerRef = useRef(null);
+
+  useEffect(() => {
+    return () => {
+      if (focusTimerRef.current) {
+        clearTimeout(focusTimerRef.current);
+        focusTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  const focusNodeNow = (id) => {
+    try {
+      const wrapper = containerRef.current?.querySelector(
+        `[data-node-id="${id}"]`
+      );
+      const el = wrapper?.querySelector(".node-text");
+      if (!el) return false;
+
+      // Improves reliability on Android
+      el.click();
+      el.focus({ preventScroll: true });
+
+      const sel = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      range.collapse(false);
+      sel.removeAllRanges();
+      sel.addRange(range);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const scheduleMobileFocus = (id, delayMs = 200) => {
+    if (focusTimerRef.current) {
+      clearTimeout(focusTimerRef.current);
+      focusTimerRef.current = null;
+    }
+    focusTimerRef.current = setTimeout(() => {
+      focusNodeNow(id);
+    }, delayMs);
+  };
+
+  /** ─────────────── Add node: dbl/tap ─────────────── **/
   const handleDoubleClick = (e) => {
-    // ignore UI or shapes overlay clicks (ViewsBar/TasksPanel/DrawToolbar/ShapesLayer can mark with data-ui or data-shapes-layer)
     if (
       e.target?.isContentEditable ||
       e.target?.closest?.("[data-ui]") ||
@@ -192,9 +258,14 @@ export default function Canvas({ docId = "home" }) {
     ) {
       return;
     }
+
+    const ne = e.nativeEvent ?? e;
     const rect = containerRef.current.getBoundingClientRect();
-    const screen = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    const cx = typeof ne.clientX === "number" ? ne.clientX : ne.pageX ?? 0;
+    const cy = typeof ne.clientY === "number" ? ne.clientY : ne.pageY ?? 0;
+    const screen = { x: cx - rect.left, y: cy - rect.top };
     const world = screenToWorld(screen, cameraRef.current);
+
     const id = Date.now();
     const Zc = scale(cameraRef.current);
     const nodeScale = NEW_NODE_FONT_PX / ((BASE_FONT_PX * Zc) / 4);
@@ -211,52 +282,69 @@ export default function Canvas({ docId = "home" }) {
           wrapCh: computeInitialWrapCh(cameraRef),
         },
       ]);
-      setFocusId(id); // NodesLayer should autofocus this id
+      setFocusId(id);
       setSelectedIds([id]);
       setSelectedShapeId(null);
     };
 
-    // On touch, flush so the contentEditable exists before keyboard shows
-    if (e.pointerType === "touch") {
+    const isTouchish =
+      ne.pointerType === "touch" ||
+      (ne.sourceCapabilities?.firesTouchEvents ?? false);
+
+    if (isTouchish) {
+      // Mount immediately so the DOM exists, but delay focus for Android
       flushSync(apply);
+      scheduleMobileFocus(id, 500);
     } else {
       apply();
+      // Desktop immediate focus still feels nice
+      requestAnimationFrame(() => focusNodeNow(id));
     }
   };
 
+  /** ─────────────── Add node: single tap in Text tool (unchanged) ───────── **/
   const handleSingleClick = (e) => {
-    if (activeTool !== "text") {
-      return;
-    }
-    // Only exclude contentEditable and shapes layer, not all data-ui
+    if (activeTool !== "text") return;
     if (
       e.target?.isContentEditable ||
       e.target?.closest?.("[data-shapes-layer]")
-    ) {
+    )
       return;
-    }
 
     const rect = containerRef.current.getBoundingClientRect();
     const screen = { x: e.clientX - rect.left, y: e.clientY - rect.top };
     const world = screenToWorld(screen, cameraRef.current);
+
     const id = Date.now();
     const Zc = scale(cameraRef.current);
     const nodeScale = NEW_NODE_FONT_PX / ((BASE_FONT_PX * Zc) / 4);
 
-    setNodes((ns) => [
-      ...ns,
-      {
-        id,
-        x: world.x,
-        y: world.y,
-        text: "",
-        scale: nodeScale,
-        wrapCh: computeInitialWrapCh(cameraRef),
-      },
-    ]);
-    setFocusId(id);
-    setSelectedIds([id]);
-    setSelectedShapeId(null);
+    const apply = () => {
+      setNodes((ns) => [
+        ...ns,
+        {
+          id,
+          x: world.x,
+          y: world.y,
+          text: "",
+          scale: nodeScale,
+          wrapCh: computeInitialWrapCh(cameraRef),
+        },
+      ]);
+      setFocusId(id);
+      setSelectedIds([id]);
+      setSelectedShapeId(null);
+    };
+
+    const isTouchish = e.nativeEvent?.pointerType === "touch";
+    if (isTouchish) {
+      flushSync(apply);
+      // Keep single-tap behavior immediate; change if you want it delayed too
+      requestAnimationFrame(() => focusNodeNow(id));
+    } else {
+      apply();
+      requestAnimationFrame(() => focusNodeNow(id));
+    }
   };
 
   /** ─────────────── Node ops ─────────────── **/
@@ -279,9 +367,9 @@ export default function Canvas({ docId = "home" }) {
   };
   const deleteSelectedNodes = () => {
     if (!selectedIds.length) return;
-    const idsToRemove = new Set(selectedIds);
-    setNodes((ns) => ns.filter((n) => !idsToRemove.has(n.id)));
-    setTasks((ts) => ts.filter((t) => !idsToRemove.has(t.nodeId)));
+    const rm = new Set(selectedIds);
+    setNodes((ns) => ns.filter((n) => !rm.has(n.id)));
+    setTasks((ts) => ts.filter((t) => !rm.has(t.nodeId)));
     setSelectedIds([]);
     setFocusId(null);
   };
@@ -340,13 +428,11 @@ export default function Canvas({ docId = "home" }) {
     setViews((vs) => {
       if (!editingViewId) return vs;
       let found = false;
-      const next = vs.map((v) => {
-        if (v.id === editingViewId) {
-          found = true;
-          return { ...v, name: name || v.name };
-        }
-        return v;
-      });
+      const next = vs.map((v) =>
+        v.id === editingViewId
+          ? ((found = true), { ...v, name: name || v.name })
+          : v
+      );
       return found ? next : vs;
     });
     setEditingViewId(null);
@@ -367,8 +453,52 @@ export default function Canvas({ docId = "home" }) {
   };
   const saveCurrentView = () => {
     const { camera: norm } = normalizeZoomPure(cameraRef.current);
-    const name = `View ${views.filter((v) => v.id !== "home").length + 1}`;
-    setViews((vs) => [...vs, { id: Date.now(), name, camera: { ...norm } }]);
+    const smart =
+      computeDefaultViewName() ??
+      `View ${views.filter((v) => v.id !== "home").length + 1}`;
+    setViews((vs) => [
+      ...vs,
+      { id: Date.now(), name: smart, camera: { ...norm } },
+    ]);
+  };
+
+  /** ─────────────── Zoom buttons ─────────────── **/
+  const ZOOM_BUTTON_STEP_EXP = 0.3;
+  const zoomByButtons = (deltaExp) => {
+    cancelCameraTween();
+    const { camera: fromNorm } = normalizeZoomPure(cameraRef.current);
+
+    const rect = containerRef.current?.getBoundingClientRect?.() || {
+      width: window.innerWidth,
+      height: window.innerHeight,
+      left: 0,
+      top: 0,
+    };
+    const cx = rect.width / 2,
+      cy = rect.height / 2;
+    const anchorWorld = screenToWorld({ x: cx, y: cy }, fromNorm);
+
+    const to = {
+      ...fromNorm,
+      zoomBase: 1,
+      zoomExp: fromNorm.zoomExp + deltaExp,
+    };
+    const Znext = scale(to);
+    to.x = cx - anchorWorld.x * Znext;
+    to.y = cy - anchorWorld.y * Znext;
+
+    const { camera: target } = normalizeZoomPure(to);
+    jumpToView(cameraRef, containerRef, target, true, { duration: 220 });
+  };
+  const onZoomInClick = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    zoomByButtons(+ZOOM_BUTTON_STEP_EXP);
+  };
+  const onZoomOutClick = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    zoomByButtons(-ZOOM_BUTTON_STEP_EXP);
   };
 
   /** ─────────────── Tasks helpers ─────────────── **/
@@ -393,7 +523,7 @@ export default function Canvas({ docId = "home" }) {
     setTasksOpen(true);
   };
   const goToTask = (task) => {
-    jumpToView(cameraRef, task.camera, true);
+    jumpToView(cameraRef, containerRef, task.camera, true);
     setSelectedIds([task.nodeId]);
     setSelectedShapeId(null);
   };
@@ -415,8 +545,9 @@ export default function Canvas({ docId = "home" }) {
       return [...todo, ...done];
     });
   };
-  // drag reorder within groups
-  const dragRef = useRef(null); // { group:'todo'|'done', idx:number }
+
+  // Drag reorder within groups
+  const dragRef = useRef(null);
   const reorderWithinGroup = (group, fromIdx, toIdx) => {
     setTasks((ts) => {
       const todo = ts.filter((t) => !t.done);
@@ -477,23 +608,16 @@ export default function Canvas({ docId = "home" }) {
     window.removeEventListener("pointerup", onSplitUp, true);
   };
 
-  /** ─────────────── Mobile: double-tap + pinch + two-finger pan ─────────────── **/
-  const activePointers = useRef(new Map()); // pointerId -> {x,y}
+  /** ─────────────── Mobile gestures (pinch/two-finger pan) ─────────────── **/
+  const activePointers = useRef(new Map());
   const pinchState = useRef(null);
-  // pinchState: {
-  //   startDist: number,
-  //   startCam: Camera,
-  //   startCenter: [x,y],
-  //   prevCenter: [x,y]
-  // }
   const lastTapRef = useRef({ t: 0, x: 0, y: 0 });
 
   const wrappedPointerDown = (e) => {
-    onPointerDown(e); // keep existing single-pointer pan/drag flows
-
+    onPointerDown(e);
     activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
-    // Double-tap synthesis (touch only)
+    // Double-tap synthesis for touch (if Stage isn't used)
     if (e.pointerType === "touch") {
       const now = performance.now();
       const rect = containerRef.current.getBoundingClientRect();
@@ -504,14 +628,13 @@ export default function Canvas({ docId = "home" }) {
       const isClose = Math.hypot(x - lx, y - ly) < TAP_MAX_DIST;
 
       if (isQuick && isClose) {
-        handleDoubleClick(e); // this will flushSync on touch to ensure focus
+        handleDoubleClick(e);
         lastTapRef.current = { t: 0, x: 0, y: 0 };
       } else {
         lastTapRef.current = { t: now, x, y };
       }
     }
 
-    // Start pinch/two-finger pan when two pointers
     if (activePointers.current.size === 2) {
       cancelCameraTween();
       const pts = [...activePointers.current.values()];
@@ -520,7 +643,6 @@ export default function Canvas({ docId = "home" }) {
       pinchState.current = {
         startDist,
         startCam: { ...cameraRef.current },
-        startCenter: center,
         prevCenter: center,
       };
     }
@@ -539,30 +661,23 @@ export default function Canvas({ docId = "home" }) {
       const { startDist, startCam, prevCenter } = pinchState.current;
       if (startDist <= 0) return;
 
-      // Zoom factor with sensitivity (slower than default)
       const rawFactor = dist / startDist;
       const dampedExp =
         Math.log2(Math.max(0.02, rawFactor)) * PINCH_ZOOM_SENSITIVITY;
 
       setCamera(() => {
-        // Apply zoom relative to the original snapshot (stable feel)
-        const next = {
-          ...startCam,
-          zoomExp: startCam.zoomExp + dampedExp,
-        };
-
-        // Keep world point under current center fixed (anchor)
+        const next = { ...startCam, zoomExp: startCam.zoomExp + dampedExp };
         const rect = containerRef.current.getBoundingClientRect();
         const centerScreen = {
           x: centerNow[0] - rect.left,
           y: centerNow[1] - rect.top,
         };
+
         const w0 = screenToWorld(centerScreen, startCam);
         const w1 = screenToWorld(centerScreen, next);
         next.x += w0.x - w1.x;
         next.y += w0.y - w1.y;
 
-        // Two-finger pan: translate by center pixel delta / scale
         const dxPx = centerNow[0] - prevCenter[0];
         const dyPx = centerNow[1] - prevCenter[1];
         const Zc = scale(next);
@@ -573,10 +688,8 @@ export default function Canvas({ docId = "home" }) {
         return normalized;
       });
 
-      // update prev center for incremental pan
       pinchState.current.prevCenter = centerNow;
-
-      return; // don’t also pan/drag single-pointer stuff
+      return;
     }
 
     onPointerMove(e);
@@ -584,36 +697,30 @@ export default function Canvas({ docId = "home" }) {
 
   const wrappedPointerUp = (e) => {
     activePointers.current.delete(e.pointerId);
-    if (activePointers.current.size < 2) {
-      pinchState.current = null;
-    }
+    if (activePointers.current.size < 2) pinchState.current = null;
     endPan(e);
   };
-
   const wrappedPointerCancel = (e) => {
     activePointers.current.delete(e.pointerId);
     pinchState.current = null;
     endPan(e);
   };
-
   const wrappedPointerLeave = (e) => {
     onPointerLeave(e);
   };
 
+  /** ─────────────── Node wrap helper ─────────────── **/
   const setNodeWrap = (id, wrapChOrNull) => {
     setNodes((ns) =>
       ns.map((n) => (n.id === id ? { ...n, wrapCh: wrapChOrNull } : n))
     );
   };
-
   function computeInitialWrapCh(cameraRef) {
     const Zc = scale(cameraRef.current);
-    // this mirrors your new-node scale math so fontPx cancels Z nicely
     const nodeScale = NEW_NODE_FONT_PX / ((BASE_FONT_PX * Zc) / 4);
     const fontPx = BASE_FONT_PX * Zc * nodeScale; // ≈ NEW_NODE_FONT_PX * 4
     const chPx = fontPx * CH_PER_EM_GUESS;
     const raw = DEFAULT_NODE_WRAP_PX / Math.max(1, chPx);
-    // round to nice halves and clamp to a sane minimum
     return Math.max(4, Math.round(raw * 2) / 2);
   }
 
@@ -626,12 +733,11 @@ export default function Canvas({ docId = "home" }) {
         overflow: "hidden",
         background: "#fff",
         userSelect: "none",
-        touchAction: "none", // keep default gestures off so we get pointers
+        touchAction: "none",
         WebkitUserSelect: "none",
         overscrollBehavior: "none",
         cursor: "default",
       }}
-      // Desktop double-click still works natively
       onDoubleClick={handleDoubleClick}
       onClick={handleSingleClick}
       onPointerDown={wrappedPointerDown}
@@ -640,13 +746,34 @@ export default function Canvas({ docId = "home" }) {
       onPointerCancel={wrappedPointerCancel}
       onPointerLeave={wrappedPointerLeave}
     >
-      {/* ── Views (top bar) ───────────────────────────── */}
+      <Link to="/admin">
+        <button
+          style={{
+            position: "absolute",
+            top: '10px',
+            left: '10px',
+            zIndex: 1000,
+            width: 36,
+            height: 36,
+            borderRadius: 8,
+            border: "1px solid #e5e7eb",
+            boxShadow: "0 2px 6px rgba(0,0,0,0.08)",
+            backgroundColor: 'white',
+            cursor: "pointer",
+            fontSize: 18,
+            zIndex: 2000,
+          }}
+        >
+          ⌂
+        </button>
+      </Link>
+
       <ViewsBar
         views={views}
         editingViewId={editingViewId}
         editingName={editingName}
         setEditingName={setEditingName}
-        jumpToView={jumpToView.bind(null, cameraRef)}
+        jumpToView={jumpToView.bind(null, cameraRef, containerRef)}
         startRenameView={startRenameView}
         commitRenameView={commitRenameView}
         updateViewCamera={updateViewCamera}
@@ -654,7 +781,6 @@ export default function Canvas({ docId = "home" }) {
         saveCurrentView={saveCurrentView}
       />
 
-      {/* ── Tasks panel (left) ────────────────────────── */}
       <TasksPanel
         tasksOpen={tasksOpen}
         taskSplit={taskSplit}
@@ -672,11 +798,11 @@ export default function Canvas({ docId = "home" }) {
         onSplitDown={onSplitDown}
       />
 
-      {/* ── Draw toolbar (right) ──────────────────────── */}
       <DrawToolbar activeTool={activeTool} setActiveTool={setActiveTool} />
 
-      {/* ── Render order: Grid → Shapes → Nodes → DrawOverlay ── */}
       <Grid camera={camera} />
+
+      <ZoomBtns onZoomInClick={onZoomInClick} onZoomOutClick={onZoomOutClick} />
 
       <ShapesLayer
         shapes={shapes}
@@ -757,6 +883,7 @@ export default function Canvas({ docId = "home" }) {
             ns.map((n) => (n.id === id ? { ...n, text: html } : n))
           )
         }
+        registerMeasureApi={(api) => (nodesMeasureRef.current = api)}
         onBackgroundClickAway={clearSelectionsAndBlur}
         onAddTaskNode={addTaskForNode}
         doneNodeIds={doneNodeIds}

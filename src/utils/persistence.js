@@ -30,19 +30,22 @@ function parseSnapshot(data) {
       cam = normalizeZoomPure(cam).camera;
     }
 
-const nodes = Array.isArray(data.nodes)
-  ? data.nodes.map((n) => ({
-      id: n.id ?? Date.now() + Math.random(),
-      x: coerceNum(n.x, 0),
-      y: coerceNum(n.y, 0),
-      text: typeof n.text === "string" ? n.text : "",
-      scale: (() => {
-        const s = coerceNum(n.scale, 1);
-        return Math.min(20, Math.max(0.05, s));
-      })(),
-     wrapCh: typeof n.wrapCh === "number" && isFinite(n.wrapCh) ? n.wrapCh : null,
-    }))
-  : [];
+    const nodes = Array.isArray(data.nodes)
+      ? data.nodes.map((n) => ({
+          id: n.id ?? Date.now() + Math.random(),
+          x: coerceNum(n.x, 0),
+          y: coerceNum(n.y, 0),
+          text: typeof n.text === "string" ? n.text : "",
+          scale: (() => {
+            const s = coerceNum(n.scale, 1);
+            return Math.min(20, Math.max(0.05, s));
+          })(),
+          wrapCh:
+            typeof n.wrapCh === "number" && isFinite(n.wrapCh)
+              ? n.wrapCh
+              : null,
+        }))
+      : [];
 
     const shapes = Array.isArray(data.shapes)
       ? data.shapes.filter(
@@ -137,7 +140,12 @@ export async function loadPersisted(docId = "home") {
   if (!API_BASE) return readLocal(docId);
 
   try {
-    const res = await fetch(`${API_BASE}/api/doc/${encodeURIComponent(docId)}`);
+    const res = await fetch(
+      `${API_BASE}/api/doc/${encodeURIComponent(docId)}`,
+      {
+        credentials: "include",
+      }
+    );
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json(); // may be null
     const parsed = json ? parseSnapshot(json) : null;
@@ -154,7 +162,8 @@ export function savePersisted(docId, payload) {
   if (!API_BASE) return;
   fetch(`${API_BASE}/api/doc/${encodeURIComponent(docId)}`, {
     method: "PUT",
-    headers: WRITE_HEADERS,
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   }).catch(() => {});
 }
