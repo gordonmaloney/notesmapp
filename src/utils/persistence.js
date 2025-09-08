@@ -1,5 +1,4 @@
 import { normalizeZoomPure } from "../hooks/useCamera";
-import snapshot from "./home.json";
 
 
 const API_BASE = import.meta.env?.VITE_API_BASE || null; // e.g. http://localhost:3001
@@ -122,11 +121,11 @@ function parseSnapshot(data) {
   }
 }
 
-
-
 function readLocal(docId) {
   try {
-    const raw = localStorage.getItem(storageKey(docId));
+    //const raw = localStorage.getItem(storageKey(docId));
+
+
 
 
 
@@ -173,7 +172,7 @@ export function savePersisted(docId, payload) {
     method: "PUT",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: "JSON.stringify(payload)",
+    body: JSON.stringify(payload),
   }).catch(() => {});
 }
 
