@@ -182,6 +182,10 @@ export default function Canvas({ docId = "home" }) {
         clearSelectionsAndBlur();
         return;
       }
+      if (e.key === "t") {
+        setActiveTool("text");
+        return;
+      }
       if (
         e.target?.isContentEditable ||
         /^(INPUT|TEXTAREA|SELECT)$/.test(e.target?.tagName)
@@ -750,15 +754,15 @@ export default function Canvas({ docId = "home" }) {
         <button
           style={{
             position: "absolute",
-            top: '10px',
-            left: '10px',
+            top: "10px",
+            left: "10px",
             zIndex: 1000,
             width: 36,
             height: 36,
             borderRadius: 8,
             border: "1px solid #e5e7eb",
             boxShadow: "0 2px 6px rgba(0,0,0,0.08)",
-            backgroundColor: 'white',
+            backgroundColor: "white",
             cursor: "pointer",
             fontSize: 18,
             zIndex: 2000,

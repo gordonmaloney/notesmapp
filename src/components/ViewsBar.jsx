@@ -1,3 +1,5 @@
+import { useEffect } from "react";
+
 export default function ViewsBar({
   views,
   editingViewId,
@@ -21,6 +23,23 @@ export default function ViewsBar({
     userSelect: "none",
     whiteSpace: "nowrap",
   });
+
+  //jump to view by number
+  useEffect(() => {
+    const onKey = (e) => {
+      // only handle digits 1–9
+      if (/^[1-9]$/.test(e.key)) {
+        const index = e.key;
+        if (index < views.length) {
+          jumpToView(views[index].camera, true);
+        }
+      }
+    };
+
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [views, jumpToView]);
+
   return (
     <div
       data-ui
@@ -55,15 +74,13 @@ export default function ViewsBar({
       >
         {views
           .filter((v) => v.id !== "home")
-          .map((v) => (
+          .map((v, index) => (
             <div
               key={v.id}
               style={{ display: "flex", flexDirection: "column" }}
             >
               {editingViewId === v.id ? (
-                <div
-                style={{display: "flex", flexDirection: 'column'}}
-                >
+                <div style={{ display: "flex", flexDirection: "column" }}>
                   <input
                     autoFocus
                     value={editingName}
@@ -92,7 +109,7 @@ export default function ViewsBar({
                     onDoubleClick={(e) => e.stopPropagation()}
                     style={{
                       display: "flex",
-                      flexDirection: 'column',
+                      flexDirection: "column",
                       gap: 6,
                       marginTop: 4,
                       alignItems: "center",
@@ -139,7 +156,7 @@ export default function ViewsBar({
                   title={`Go to ${v.name} (double-click to rename)`}
                   style={chipStyle()}
                 >
-                  {v.name}
+                  {index+1} - {v.name}
                 </button>
               )}
             </div>
