@@ -1,7 +1,6 @@
 import { useRef, useEffect, useState, useLayoutEffect } from "react";
 import NodeItem from "./NodeItem";
 
-
 const BLUE = "#3b82f6";
 
 const GROUP_HANDLE = 14;
@@ -10,7 +9,6 @@ const GROUP_OFFSET = 8;
 const PX_PER_DOUBLE_BASE = 60;
 const PX_PER_DOUBLE_SHIFT = 120;
 const PX_PER_DOUBLE_ALT = 30;
-
 
 export default function NodesLayer({
   nodes,
@@ -207,12 +205,12 @@ export default function NodesLayer({
 
     const lines = htmlToLines(el.innerHTML);
     if (lines.length === 0) return;
-    const list = `<ul data-checklist="true" style="list-style:none;margin:0;padding-left:0">
+    const list = `<ul data-checklist="true" style="list-style:none;margin:0;padding-left:0;line-height:5px">
       ${lines
         .map(
           (l) => `<li>
-            <label style="display:flex;align-items:flex-start;gap:0.4em">
-              <input type="checkbox" style="width:1em;height:1em;margin-top:0.2em" />
+            <label style="display:flex;align-items:center;gap:0.4em;">
+              <input type="checkbox" style="width:1em;height:30px;overflow:hidden;margin-top:0.2em" />
               <span>${l || "<br>"}</span>
             </label>
           </li>`
@@ -222,14 +220,13 @@ export default function NodesLayer({
     setEditorHTML(el, list);
   };
 
-
   // Expose a simple measurement API up to Canvas
   useEffect(() => {
     if (!registerMeasureApi) return;
     const api = {
       // returns [{ id, rect: DOMRect }]
-    getMetrics: () =>
-       Array.from(wrapperRefs.current.entries()).map(([id, wrapEl]) => {
+      getMetrics: () =>
+        Array.from(wrapperRefs.current.entries()).map(([id, wrapEl]) => {
           const textEl = textRefs.current.get(id);
           const rect = wrapEl.getBoundingClientRect();
           // Prefer the text box’s rendered dimensions; fall back to wrapper/rect
@@ -244,7 +241,6 @@ export default function NodesLayer({
     registerMeasureApi(api);
     return () => registerMeasureApi(null);
   }, [registerMeasureApi, nodes, Z, camera.x, camera.y]);
-
 
   // ===== marquee + group selection =====
   const [dragSel, setDragSel] = useState(null);
