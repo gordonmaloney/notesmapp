@@ -152,6 +152,9 @@ export default function Admin() {
     }
   };
 
+
+console.log(docs)
+
   return (
     <div style={{ maxWidth: 800, margin: "0 auto", padding: 16 }}>
       <h1>Admin</h1>
@@ -253,7 +256,7 @@ export default function Admin() {
                       style={{ display: "flex", alignItems: "center", gap: 8 }}
                     >
                       <Link
-                        to={`/${encodeURIComponent(d.id)}`}
+                        to={`/${encodeURIComponent(d.name)}`}
                         style={{ flex: 1, minWidth: 0 }}
                       >
                         <div
@@ -264,11 +267,39 @@ export default function Admin() {
                             overflow: "hidden",
                           }}
                         >
-                          {d.id}
+                          {d.name}
                         </div>
                       </Link>
                       <button onClick={() => startEdit(d)} title="Rename">
                         Rename
+                      </button>
+                      <button
+                        onClick={async () => {
+                          if (
+                            !window.confirm(`Delete map "${d.name || d.id}"?`)
+                          )
+                            return;
+                          try {
+                            const res = await fetch(
+                              `${API_BASE}/api/doc/${encodeURIComponent(d.id)}`,
+                              {
+                                method: "DELETE",
+                                credentials: "include",
+                              }
+                            );
+                            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                            // Optimistically remove from UI
+                            setDocs((ds) =>
+                              ds.filter((doc) => doc.id !== d.id)
+                            );
+                          } catch (e) {
+                            alert("Delete failed: " + e.message);
+                          }
+                        }}
+                        title="Delete"
+                        style={{ color: "red" }}
+                      >
+                        Delete
                       </button>
                     </div>
                   )}

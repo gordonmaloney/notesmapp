@@ -1,6 +1,5 @@
 import { normalizeZoomPure } from "../hooks/useCamera";
 
-
 const API_BASE = import.meta.env?.VITE_API_BASE || null; // e.g. http://localhost:3001
 const WRITE_HEADERS = {
   "Content-Type": "application/json",
@@ -125,10 +124,6 @@ function readLocal(docId) {
   try {
     //const raw = localStorage.getItem(storageKey(docId));
 
-
-
-
-
     if (!raw) return null;
     return parseSnapshot(JSON.parse(raw));
   } catch {
@@ -142,37 +137,50 @@ function writeLocal(docId, payload) {
   } catch {}
 }
 
-export async function loadPersisted(docId = "home") {
-  if (!API_BASE) return readLocal(docId);
+export async function loadPersisted(docKey = "home") {
+  if (!API_BASE) return readLocal(docKey);
 
   try {
     const res = await fetch(
-      `${API_BASE}/api/doc/${encodeURIComponent(docId)}`,
+      `${API_BASE}/api/doc/${encodeURIComponent(docKey)}`,
       {
         credentials: "include",
       }
     );
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
     const json = await res.json(); // may be null
-    const parsed = json ? parseSnapshot(json) : null;
-    if (!parsed) return readLocal(docId);
-    writeLocal(docId, parsed);
-    return parsed;
+
+    const parsed = json.snapshot ? parseSnapshot(json.snapshot) : null;
+    if (!parsed) return readLocal(docKey);
+
+    // Prefer canonical ID for storage (falls back to the key if missing)
+    const storageKey = (json && (json._id || json.id)) || docKey;
+
+    const dataToReturn = {
+      snapshot: parsed,
+      id: json._id,
+      name: json.name,
+    };
+
+    //writeLocal(storageKey, parsed);
+    return dataToReturn;
   } catch {
-    return readLocal(docId);
+    return readLocal(docKey);
   }
 }
 
+export function savePersisted(id, payload) {
+  if (id) {
+    console.log("fetching: ", `${API_BASE}/api/doc/${encodeURIComponent(id)}`);
 
-
-export function savePersisted(docId, payload) {
-  writeLocal(docId, payload);
-  if (!API_BASE) return;
-  fetch(`${API_BASE}/api/doc/${encodeURIComponent(docId)}`, {
-    method: "PUT",
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  }).catch(() => {});
+    writeLocal(id, payload);
+    if (!API_BASE) return;
+    fetch(`${API_BASE}/api/doc/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }).catch(() => {});
+  }
 }
-

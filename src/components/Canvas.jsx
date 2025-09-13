@@ -38,7 +38,7 @@ export default function Canvas({ docId = "home" }) {
   const nodesMeasureRef = useRef(null);
 
   useEffect(() => {
-    document.title = `Canvas – ${docId}`;
+    document.title = `Notesmapp – ${docId}`;
   }, [docId]);
 
   // live camera ref
@@ -51,7 +51,9 @@ export default function Canvas({ docId = "home" }) {
     useCameraTween(setCamera);
 
   /** ─────────────── State ─────────────── **/
-  const [nodes, setNodes] = useState([]);
+  const [id, setId] = useState('')
+  const [name, setName] = useState('')
+    const [nodes, setNodes] = useState([]);
   const [focusId, setFocusId] = useState(null);
   const [selectedIds, setSelectedIds] = useState([]);
 
@@ -77,8 +79,13 @@ export default function Canvas({ docId = "home" }) {
   useEffect(() => {
     let alive = true;
     (async () => {
-      const data = await loadPersisted(docId);
-      if (!alive || !data) return;
+      const fetchedMap = await loadPersisted(docId);
+      if (!alive || !fetchedMap) return;
+
+      const data = fetchedMap.snapshot
+
+      if (fetchedMap.id) setId(fetchedMap.id);
+      if (fetchedMap.name) setName(fetchedMap.name)
 
       if (data.nodes) setNodes(data.nodes);
       if (data.shapes) setShapes(data.shapes);
@@ -94,6 +101,7 @@ export default function Canvas({ docId = "home" }) {
       alive = false;
     };
   }, [docId, setCamera]);
+
 
   // Helpers for a smart default view title
   const titleFromHtml = (html) => {
@@ -130,11 +138,14 @@ export default function Canvas({ docId = "home" }) {
     return titleFromHtml(node?.text) || null;
   };
 
+
+
   /** ─────────────── Persist (debounced) ─────────────── **/
   const saveTimer = useRef(null);
   useEffect(() => {
     const snapshot = {
       v: 1,
+      name,
       nodes,
       shapes,
       views,
@@ -144,7 +155,7 @@ export default function Canvas({ docId = "home" }) {
     };
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
-      savePersisted(docId, snapshot);
+      savePersisted(id, snapshot);
       saveTimer.current = null;
     }, 250);
     return () => {
@@ -153,7 +164,7 @@ export default function Canvas({ docId = "home" }) {
         saveTimer.current = null;
       }
     };
-  }, [docId, nodes, shapes, views, tasks, camera, tasksOpen, taskSplit]);
+  }, [docId, id, nodes, shapes, views, tasks, camera, tasksOpen, taskSplit]);
 
   /** ─────────────── Container + pan/zoom ─────────────── **/
   const containerRef = useRef(null);
@@ -182,7 +193,8 @@ export default function Canvas({ docId = "home" }) {
         clearSelectionsAndBlur();
         return;
       }
-      if (e.key === "t") {
+      if (e.key === "t" && e.target == document.body) {
+        console.log(e.target);
         setActiveTool("text");
         return;
       }
