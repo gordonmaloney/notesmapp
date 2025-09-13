@@ -1,3 +1,4 @@
+import { useState } from "react";
 import TaskRow from "./TaskRow";
 
 export default function TasksPanel({
@@ -10,6 +11,7 @@ export default function TasksPanel({
   goToTask,
   toggleTaskDone,
   removeTask,
+  removeTasks,
   onTaskDragStart,
   onTaskDragOver,
   onTaskDrop,
@@ -23,6 +25,8 @@ export default function TasksPanel({
     const text = (div.textContent || "").replace(/\u00A0/g, " ").trim();
     return text.split(/\r?\n/)[0]?.trim() || "";
   };
+
+  const [tasksToRemove, setTasksToRemove] = useState([1757755333774, 2, 3]);
 
   return (
     <>
@@ -155,6 +159,9 @@ export default function TasksPanel({
                   />
                 );
               })}
+            <button onClick={(e) => removeTasks(tasks.filter((t) => t.done).map(task => task.nodeId))}>
+              Remove all completed tasks
+            </button>
           </div>
         </div>
       </div>

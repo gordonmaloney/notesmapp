@@ -215,7 +215,6 @@ export default function Admin() {
         throw new Error(`Fetch source failed (HTTP ${fullRes.status})`);
       const source = await fullRes.json();
 
-      console.log(source);
       if (!source) throw new Error("Source not found");
 
       // 2) Build new snapshot
@@ -230,18 +229,7 @@ export default function Admin() {
 
 
 
-      //REMOVE DONE TASKS
-      let doneTasksList = snapshot.tasks
-        .filter((task) => task.done == true)
-        .map((node) => node.nodeId);
 
-      let undoneNodes = snapshot.nodes.filter(
-        (node) => !doneTasksList.includes(node.id)
-      );
-
-      snapshot.tasks = snapshot.tasks.filter(task => task.done !== true)
-      snapshot.nodes = undoneNodes
-      
 
       // 2a) Clean server-managed/identity fields if present
       // (depends on your schema; keep this defensive)
@@ -291,6 +279,7 @@ export default function Admin() {
       setCloneBusy(null);
     }
   };
+
 
   return (
     <div style={{ maxWidth: 800, margin: "0 auto", padding: 16 }}>
@@ -418,7 +407,7 @@ export default function Admin() {
                       </button>
 
                       <button
-                        onClick={() => cloneDoc(d)}
+                        onClick={() =>cloneDoc(d)}
                         title="Clone"
                         disabled={cloneBusy === d.id}
                       >

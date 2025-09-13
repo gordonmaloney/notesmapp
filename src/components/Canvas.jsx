@@ -163,7 +163,6 @@ export default function Canvas({ docId = "home" }) {
     };
   }, [docId, id, nodes, shapes, views, tasks, camera, tasksOpen, taskSplit]);
 
-
   /** ─────────────── Container + pan/zoom ─────────────── **/
   const containerRef = useRef(null);
   const { onPointerDown, onPointerMove, endPan, onPointerLeave, onKeyZoom } =
@@ -542,6 +541,16 @@ export default function Canvas({ docId = "home" }) {
     setSelectedShapeId(null);
   };
   const removeTask = (id) => setTasks((ts) => ts.filter((t) => t.id !== id));
+
+  const removeTasks = (tasksToRemove) => {
+    console.log(tasksToRemove);
+
+    if (!window.confirm(`Delete tasks and nodes?`)) return;
+
+    setNodes(nodes.filter((node) => !tasksToRemove.includes(node.id)));
+    setTasks((tasks) => tasks.filter((t) => !tasksToRemove.includes(t.nodeId)));
+  };
+
   const toggleTaskDone = (id, value) => {
     setTasks((ts) => {
       const updated = ts.map((t) => (t.id === id ? { ...t, done: value } : t));
@@ -805,6 +814,7 @@ export default function Canvas({ docId = "home" }) {
         goToTask={goToTask}
         toggleTaskDone={toggleTaskDone}
         removeTask={removeTask}
+        removeTasks={removeTasks}
         onTaskDragStart={onTaskDragStart}
         onTaskDragOver={onTaskDragOver}
         onTaskDrop={onTaskDrop}
