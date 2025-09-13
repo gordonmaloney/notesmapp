@@ -1,6 +1,7 @@
 // src/pages/Admin.jsx
 import { useEffect, useState, useCallback } from "react";
 import { Link } from "react-router-dom";
+import { v4 as uuidv4 } from "uuid";
 
 const API_BASE = import.meta.env?.VITE_API_BASE || "";
 
@@ -152,8 +153,144 @@ export default function Admin() {
     }
   };
 
+  const createDoc = async () => {
+    const defaultName = "Untitled map";
+    const name = window.prompt("Name your new map:", defaultName);
+    if (name === null) return; // cancelled
+    const clean = name.trim();
+    if (!clean) return;
 
-console.log(docs)
+    const id = uuidv4(); // generate a new unique id
+
+    const snapshot = {
+      name: clean,
+      meta: { title: clean },
+      // Add other empty/default fields your editor expects
+      data: {},
+    };
+
+    setLoading(true);
+    setErr("");
+    try {
+      const res = await fetch(`${API_BASE}/api/doc/${encodeURIComponent(id)}`, {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(snapshot),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+      // Locally add the new doc to the list
+      const newDoc = { id, name: clean, updatedAt: Date.now() };
+      setDocs((ds) => [newDoc, ...ds]);
+
+      // Optionally navigate right into it
+      navigate(`/${encodeURIComponent(clean)}`);
+    } catch (e) {
+      setErr(String(e.message || e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const [cloneBusy, setCloneBusy] = useState(null);
+
+  const cloneDoc = async (doc) => {
+    // doc = { id, name, updatedAt } (from your list)
+    const defaultName = `${doc.name || "Untitled"} (copy)`;
+    const newName = window.prompt("Name for the cloned map:", defaultName);
+    if (newName === null) return; // cancelled
+    const cleanName = newName.trim();
+    if (!cleanName) return;
+
+    setCloneBusy(doc.id);
+    setErr("");
+    try {
+      // 1) Fetch full snapshot by NAME
+      const fullRes = await fetch(
+        `${API_BASE}/api/doc/${encodeURIComponent(doc.name)}`,
+        { credentials: "include", cache: "no-store" }
+      );
+      if (!fullRes.ok)
+        throw new Error(`Fetch source failed (HTTP ${fullRes.status})`);
+      const source = await fullRes.json();
+
+      console.log(source);
+      if (!source) throw new Error("Source not found");
+
+      // 2) Build new snapshot
+      // Make a deep clone so we don't mutate the original.
+      // Prefer structuredClone if available; fallback to JSON copy.
+      const deep = (obj) =>
+        typeof structuredClone === "function"
+          ? structuredClone(obj)
+          : JSON.parse(JSON.stringify(obj));
+
+      const snapshot = deep(source.snapshot);
+
+
+
+      //REMOVE DONE TASKS
+      let doneTasksList = snapshot.tasks
+        .filter((task) => task.done == true)
+        .map((node) => node.nodeId);
+
+      let undoneNodes = snapshot.nodes.filter(
+        (node) => !doneTasksList.includes(node.id)
+      );
+
+      snapshot.tasks = snapshot.tasks.filter(task => task.done !== true)
+      snapshot.nodes = undoneNodes
+      
+
+      // 2a) Clean server-managed/identity fields if present
+      // (depends on your schema; keep this defensive)
+      delete snapshot.id;
+      delete snapshot._id;
+      delete snapshot.ownerId;
+      delete snapshot.createdAt;
+      delete snapshot.updatedAt;
+      // If you keep slugs or derived fields, reset them so the server can regenerate
+      if ("slug" in snapshot) delete snapshot.slug;
+
+      // 2b) Update naming fields your editor/server use
+      snapshot.name = cleanName;
+      snapshot.meta = {
+        ...(snapshot.meta || {}),
+        title: cleanName,
+      };
+
+      // 3) Create new id and PUT (upsert)
+      const newId = uuidv4();
+      const putRes = await fetch(
+        `${API_BASE}/api/doc/${encodeURIComponent(newId)}`,
+        {
+          method: "PUT",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(snapshot),
+        }
+      );
+      if (!putRes.ok)
+        throw new Error(`Clone write failed (HTTP ${putRes.status})`);
+
+      // 4) Update UI (prepend new summary)
+      const newDocSummary = {
+        id: newId,
+        name: cleanName,
+        updatedAt: Date.now(),
+      };
+      setDocs((ds) => [newDocSummary, ...ds]);
+
+      // 5) (Optional) navigate right into the clone by name
+      // navigate(`/${encodeURIComponent(cleanName)}`);
+    } catch (e) {
+      console.error(e);
+      alert("Clone failed: " + (e.message || e));
+    } finally {
+      setCloneBusy(null);
+    }
+  };
 
   return (
     <div style={{ maxWidth: 800, margin: "0 auto", padding: 16 }}>
@@ -223,6 +360,12 @@ console.log(docs)
 
       {loading && <p>Loading…</p>}
 
+      {me && (
+        <button onClick={createDoc} disabled={loading}>
+          {loading ? "Working…" : "Create"}
+        </button>
+      )}
+
       {!loading &&
         me &&
         (docs.length ? (
@@ -273,6 +416,15 @@ console.log(docs)
                       <button onClick={() => startEdit(d)} title="Rename">
                         Rename
                       </button>
+
+                      <button
+                        onClick={() => cloneDoc(d)}
+                        title="Clone"
+                        disabled={cloneBusy === d.id}
+                      >
+                        {cloneBusy === d.id ? "Cloning…" : "Clone"}
+                      </button>
+
                       <button
                         onClick={async () => {
                           if (

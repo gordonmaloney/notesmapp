@@ -51,9 +51,9 @@ export default function Canvas({ docId = "home" }) {
     useCameraTween(setCamera);
 
   /** ─────────────── State ─────────────── **/
-  const [id, setId] = useState('')
-  const [name, setName] = useState('')
-    const [nodes, setNodes] = useState([]);
+  const [id, setId] = useState("");
+  const [name, setName] = useState("");
+  const [nodes, setNodes] = useState([]);
   const [focusId, setFocusId] = useState(null);
   const [selectedIds, setSelectedIds] = useState([]);
 
@@ -82,10 +82,10 @@ export default function Canvas({ docId = "home" }) {
       const fetchedMap = await loadPersisted(docId);
       if (!alive || !fetchedMap) return;
 
-      const data = fetchedMap.snapshot
+      const data = fetchedMap.snapshot;
 
       if (fetchedMap.id) setId(fetchedMap.id);
-      if (fetchedMap.name) setName(fetchedMap.name)
+      if (fetchedMap.name) setName(fetchedMap.name);
 
       if (data.nodes) setNodes(data.nodes);
       if (data.shapes) setShapes(data.shapes);
@@ -101,7 +101,6 @@ export default function Canvas({ docId = "home" }) {
       alive = false;
     };
   }, [docId, setCamera]);
-
 
   // Helpers for a smart default view title
   const titleFromHtml = (html) => {
@@ -138,8 +137,6 @@ export default function Canvas({ docId = "home" }) {
     return titleFromHtml(node?.text) || null;
   };
 
-
-
   /** ─────────────── Persist (debounced) ─────────────── **/
   const saveTimer = useRef(null);
   useEffect(() => {
@@ -165,6 +162,7 @@ export default function Canvas({ docId = "home" }) {
       }
     };
   }, [docId, id, nodes, shapes, views, tasks, camera, tasksOpen, taskSplit]);
+
 
   /** ─────────────── Container + pan/zoom ─────────────── **/
   const containerRef = useRef(null);
