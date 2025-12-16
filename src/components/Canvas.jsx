@@ -140,8 +140,14 @@ export default function Canvas({ docId = "home" }) {
     return titleFromHtml(node?.text) || null;
   };
 
-  /** ─────────────── Persist (debounced) ─────────────── **/
+  /** 
+   * ─────────────── Persist (debounced) ─────────────── 
+   * Management of auto-saving to local storage / API.
+   * Includes safeguards against data loss (overwriting with empty/loading state).
+   **/
   const saveTimer = useRef(null);
+
+  // Tracks if we have seen >0 nodes this session. Used to warn user if they delete everything.
   const hasHadNodesRef = useRef(false);
 
   useEffect(() => {

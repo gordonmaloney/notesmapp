@@ -1,5 +1,6 @@
 import { useRef, useEffect, useMemo, useState, useLayoutEffect } from "react";
 import NodeItem from "./NodeItem";
+import { screenToWorld } from "../utils/math";
 
 const BLUE = "#3b82f6";
 
@@ -453,22 +454,51 @@ export default function NodesLayer({
   let doneNodes = Array.from(doneNodeIds);
 
   const doneSet = useMemo(() => new Set(doneNodes), [doneNodes]);
-  const [nodesToDisplay, setNodesToDisplay] = useState([]);
+  /* 
+     PERFORMANCE OPTIMIZATION:
+     1. Filter hidden/done nodes.
+     2. Cull nodes that are strictly off-screen (with a margin).
+     3. Always render selected nodes to ensure group-box calculations remain correct for off-screen items.
+  */
+  const nodesToDisplay = useMemo(() => {
+    const doneSet = new Set(doneNodeIds);
+    
+    // Viewport calculation (in World Coords)
+    // We add a safety margin (e.g. 500px) so items don't "pop" in/out too aggressively
+    const MARGIN = 800;
+    const w = typeof window !== 'undefined' ? window.innerWidth : 2000;
+    const h = typeof window !== 'undefined' ? window.innerHeight : 2000;
+    
+    // Top-Left of screen in World
+    const tl = screenToWorld({ x: -MARGIN, y: -MARGIN }, camera);
+    // Bottom-Right of screen in World
+    const br = screenToWorld({ x: w + MARGIN, y: h + MARGIN }, camera);
+    
+    // Since Y grows down, world.y follows screen.y logic usually. 
+    // But let's safely use min/max to define the box.
+    const minX = Math.min(tl.x, br.x);
+    const maxX = Math.max(tl.x, br.x);
+    const minY = Math.min(tl.y, br.y);
+    const maxY = Math.max(tl.y, br.y);
 
+    return nodes.filter((n) => {
+      // 1. Hide done?
+      if (hideDoneNodes && doneSet.has(n.id)) return false;
 
-  useEffect(() => {
-    const doneSet = new Set(doneNodes);
-    const next = hideDoneNodes
-      ? nodes.filter((n) => !doneSet.has(n.id))
-      : nodes;
+      // 2. Always show selected (so bounding boxes work)
+      if (selectedIds.includes(n.id)) return true;
 
-    // shallow equality to avoid pointless state updates
-    const sameLength = next.length === nodesToDisplay.length;
-    const sameItems =
-      sameLength && next.every((n, i) => n === nodesToDisplay[i]);
-    if (!sameItems) setNodesToDisplay(next);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nodes, doneNodes, hideDoneNodes]);
+      // 3. Viewport Culling
+      // Simple point check: if node (x,y) is inside visibility box.
+      // Ideally we'd account for node Width, but since width is dynamic, 
+      // the large MARGIN (800px) handles most cases of "node origin offscreen but text onscreen".
+      if (n.x < minX || n.x > maxX || n.y < minY || n.y > maxY) {
+        return false;
+      }
+
+      return true;
+    });
+  }, [nodes, doneNodeIds, hideDoneNodes, selectedIds, camera]);
 
 
   return (
