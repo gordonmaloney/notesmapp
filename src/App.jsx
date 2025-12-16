@@ -11,7 +11,7 @@ export default function App() {
   return (
     <Routes>
       <Route path="/admin" element={<Admin />} />
-      <Route path="/" element={<Navigate to="/home" replace />} />
+      <Route path="/" element={<Navigate to="/admin" replace />} />
       <Route path="/:docId" element={<CanvasRoute />} />
     </Routes>
   );
