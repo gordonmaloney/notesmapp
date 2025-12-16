@@ -189,7 +189,7 @@ export default function Canvas({ docId = "home" }) {
   /** ─────────────── Container + pan/zoom ─────────────── **/
   const containerRef = useRef(null);
   const { onPointerDown, onPointerMove, endPan, onPointerLeave, onKeyZoom } =
-    usePanZoom(containerRef, cameraRef, setCamera, cancelCameraTween);
+    usePanZoom(containerRef, cameraRef, setCamera, cancelCameraTween, isLoaded);
 
   /** ─────────────── Keyboard ─────────────── **/
   const blurActiveEditable = () => {

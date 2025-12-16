@@ -12,7 +12,8 @@ export function usePanZoom(
   containerRef,
   cameraRef,
   setCamera,
-  cancelCameraTween
+  cancelCameraTween,
+  interactionDep
 ) {
   const isPanning = useRef(false);
   const lastPos = useRef({ x: 0, y: 0 });
@@ -78,7 +79,7 @@ export function usePanZoom(
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
-  }, [containerRef, setCamera]);
+  }, [containerRef, setCamera, interactionDep]);
 
   const onPointerDown = (e) => {
     const left = e.button === 0,
