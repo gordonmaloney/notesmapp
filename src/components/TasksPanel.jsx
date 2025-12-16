@@ -17,6 +17,8 @@ export default function TasksPanel({
   onTaskDrop,
   barRef,
   onSplitDown,
+  hideDoneNodes,
+  setHideDoneNodes,
 }) {
   const TASKS_W = 220;
   const firstLineFromHTML = (html = "") => {
@@ -127,6 +129,24 @@ export default function TasksPanel({
             }}
             title="Drag to resize"
           />
+          <center>
+            <button onClick={() => setHideDoneNodes(!hideDoneNodes)}>
+              {hideDoneNodes ? "Show" : "Hide"} completed tasks
+            </button>
+            <br />
+            <br />
+            <button
+              onClick={(e) =>
+                removeTasks(
+                  tasks.filter((t) => t.done).map((task) => task.nodeId)
+                )
+              }
+            >
+              Remove all completed tasks
+            </button>
+            <br />
+            <br />
+          </center>
           <div
             style={{
               flex: 1,
@@ -159,9 +179,6 @@ export default function TasksPanel({
                   />
                 );
               })}
-            <button onClick={(e) => removeTasks(tasks.filter((t) => t.done).map(task => task.nodeId))}>
-              Remove all completed tasks
-            </button>
           </div>
         </div>
       </div>

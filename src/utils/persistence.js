@@ -172,7 +172,6 @@ export async function loadPersisted(docKey = "home") {
 
 export function savePersisted(id, payload) {
   if (id) {
-    console.log("fetching: ", `${API_BASE}/api/doc/${encodeURIComponent(id)}`);
 
     writeLocal(id, payload);
     if (!API_BASE) return;

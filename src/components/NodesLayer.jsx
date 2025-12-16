@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState, useLayoutEffect } from "react";
+import { useRef, useEffect, useMemo, useState, useLayoutEffect } from "react";
 import NodeItem from "./NodeItem";
 
 const BLUE = "#3b82f6";
@@ -27,6 +27,7 @@ export default function NodesLayer({
 
   onScaleNode,
   onDeleteNode,
+  hideDoneNodes,
 
   onBackgroundClickAway,
 
@@ -449,6 +450,27 @@ export default function NodesLayer({
     userSelect: "none",
   });
 
+  let doneNodes = Array.from(doneNodeIds);
+
+  const doneSet = useMemo(() => new Set(doneNodes), [doneNodes]);
+  const [nodesToDisplay, setNodesToDisplay] = useState([]);
+
+
+  useEffect(() => {
+    const doneSet = new Set(doneNodes);
+    const next = hideDoneNodes
+      ? nodes.filter((n) => !doneSet.has(n.id))
+      : nodes;
+
+    // shallow equality to avoid pointless state updates
+    const sameLength = next.length === nodesToDisplay.length;
+    const sameItems =
+      sameLength && next.every((n, i) => n === nodesToDisplay[i]);
+    if (!sameItems) setNodesToDisplay(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nodes, doneNodes, hideDoneNodes]);
+
+
   return (
     <div
       ref={rootRef}
@@ -459,7 +481,7 @@ export default function NodesLayer({
       onPointerCancel={onRootPointerUp}
     >
       {/* Nodes */}
-      {nodes.map((n) => (
+      {nodesToDisplay.map((n) => (
         <NodeItem
           key={n.id}
           node={n}

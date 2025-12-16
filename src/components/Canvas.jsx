@@ -52,6 +52,7 @@ export default function Canvas({ docId = "home" }) {
 
   /** ─────────────── State ─────────────── **/
   const [id, setId] = useState("");
+  const [isLoaded, setIsLoaded] = useState(false);
   const [name, setName] = useState("");
   const [nodes, setNodes] = useState([]);
   const [focusId, setFocusId] = useState(null);
@@ -96,6 +97,8 @@ export default function Canvas({ docId = "home" }) {
       if (typeof data?.ui?.taskSplit === "number")
         setTaskSplit(data.ui.taskSplit);
       if (data.camera) flushSync(() => setCamera(data.camera));
+      
+      setIsLoaded(true);
     })();
     return () => {
       alive = false;
@@ -139,6 +142,12 @@ export default function Canvas({ docId = "home" }) {
 
   /** ─────────────── Persist (debounced) ─────────────── **/
   const saveTimer = useRef(null);
+  const hasHadNodesRef = useRef(false);
+
+  useEffect(() => {
+    if (nodes.length > 0) hasHadNodesRef.current = true;
+  }, [nodes]);
+
   useEffect(() => {
     const snapshot = {
       v: 1,
@@ -150,8 +159,22 @@ export default function Canvas({ docId = "home" }) {
       camera,
       ui: { tasksOpen, taskSplit },
     };
+    
+    if (!isLoaded) return;
+
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
+      // Safety check: if we are saving an empty map but we previously had nodes, confirm!
+      if (snapshot.nodes.length === 0 && hasHadNodesRef.current) {
+        if (
+          !window.confirm(
+            "This map has 0 nodes. Are you sure you want to save (overwriting previous data)?"
+          )
+        ) {
+          return;
+        }
+      }
+
       savePersisted(id, snapshot);
       saveTimer.current = null;
     }, 250);
@@ -161,7 +184,7 @@ export default function Canvas({ docId = "home" }) {
         saveTimer.current = null;
       }
     };
-  }, [docId, id, nodes, shapes, views, tasks, camera, tasksOpen, taskSplit]);
+  }, [docId, id, nodes, shapes, views, tasks, camera, tasksOpen, taskSplit, isLoaded]);
 
   /** ─────────────── Container + pan/zoom ─────────────── **/
   const containerRef = useRef(null);
@@ -747,6 +770,27 @@ export default function Canvas({ docId = "home" }) {
     return Math.max(4, Math.round(raw * 2) / 2);
   }
 
+  const [hideDoneNodes, setHideDoneNodes] = useState(true);
+
+  if (!isLoaded) {
+    return (
+      <div
+        style={{
+          position: "fixed",
+          inset: 0,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          background: "#fff",
+          color: "#888",
+          userSelect: "none",
+        }}
+      >
+        Loading map...
+      </div>
+    );
+  }
+
   return (
     <div
       ref={containerRef}
@@ -820,6 +864,8 @@ export default function Canvas({ docId = "home" }) {
         onTaskDrop={onTaskDrop}
         barRef={barRef}
         onSplitDown={onSplitDown}
+        hideDoneNodes={hideDoneNodes}
+        setHideDoneNodes={setHideDoneNodes}
       />
 
       <DrawToolbar activeTool={activeTool} setActiveTool={setActiveTool} />
@@ -868,6 +914,7 @@ export default function Canvas({ docId = "home" }) {
       <NodesLayer
         nodes={nodes}
         Z={Z}
+        hideDoneNodes={hideDoneNodes}
         camera={camera}
         onSetNodeWrap={setNodeWrap}
         focusId={focusId}
